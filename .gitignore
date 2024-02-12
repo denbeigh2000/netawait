@@ -1,0 +1,11 @@
+# Rust
+/target
+# Sometimes it's nice to copy the bindings from the build directory to see
+# what we're dealing with.
+/src/_bindings.rs
+
+# Nix
+/result*
+
+# Direnv
+/.direnv

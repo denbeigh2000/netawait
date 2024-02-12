@@ -1,0 +1,11 @@
+[package]
+name = "wait-for-net"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+bindgen = "0.69.4"
+
+[dependencies]
+socket2 = { version = "0.5.5", features = ["all"] }
+thiserror = "1.0.57"
