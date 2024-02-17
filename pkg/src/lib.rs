@@ -1,5 +1,3 @@
-mod system;
-
 pub struct TimeoutError;
 
 pub type TimeoutResult<E> = Result<E, TimeoutError>;

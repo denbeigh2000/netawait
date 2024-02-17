@@ -1,5 +1,3 @@
-use crate::system::bindings::sockaddr;
-
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 static ZERO_IPV4: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
@@ -29,6 +27,6 @@ impl Route {
     }
 
     pub fn is_default(&self) -> bool {
-        self.prefix == 0 && (self.destination == *ZERO_IPV4 || self.destination == *ZERO_IPV6)
+        self.prefix == 0 && (self.destination == ZERO_IPV4 || self.destination == ZERO_IPV6)
     }
 }

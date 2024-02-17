@@ -1,5 +1,5 @@
-use crate::system::bindings::{rt_msghdr, socket as raw_socket, PF_ROUTE, SOCK_RAW};
-use crate::system::header::MessageHeader;
+use crate::header::MessageHeader;
+use route_sys::{rt_msghdr, socket as raw_socket, PF_ROUTE, SOCK_RAW};
 
 use std::os::unix::io::FromRawFd;
 use std::{fs::File, mem::MaybeUninit};
