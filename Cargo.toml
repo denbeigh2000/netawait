@@ -7,5 +7,6 @@ edition = "2021"
 bindgen = "0.69.4"
 
 [dependencies]
+lazy_static = "1.4.0"
 socket2 = { version = "0.5.5", features = ["all"] }
 thiserror = "1.0.57"

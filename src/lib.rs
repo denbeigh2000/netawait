@@ -1,9 +1,4 @@
-// NOTE: for clean experiences,
-// #[allow(dead_code)]
-// mod bindings;
-mod socket;
-
-mod bindings;
+mod system;
 
 pub struct TimeoutError;
 

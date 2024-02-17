@@ -1,4 +1,4 @@
-use crate::bindings::{
+use crate::system::bindings::{
     rt_metrics, rt_msghdr, RTM_ADD, RTM_CHANGE, RTM_DELADDR, RTM_DELETE, RTM_DELMADDR, RTM_GET,
     RTM_GET2, RTM_IFINFO, RTM_IFINFO2, RTM_LOCK, RTM_LOSING, RTM_MISS, RTM_NEWADDR, RTM_NEWMADDR,
     RTM_NEWMADDR2, RTM_OLDADD, RTM_OLDDEL, RTM_REDIRECT, RTM_RESOLVE,
@@ -163,4 +163,59 @@ impl TryFrom<rt_msghdr> for MessageHeader {
             metrics: Metrics::from(value.rtm_rmx),
         })
     }
+}
+
+pub struct InterfaceData {
+    ifi_type: char,
+    ifi_typelen: char,
+    ifi_physical: char,
+    ifi_addrlen: char,
+    ifi_hdrlen: char,
+    ifi_recvquota: char,
+    ifi_xmitquota: char,
+    ifi_unused1: char,
+    ifi_mtu: u32,
+    ifi_metric: u32,
+    ifi_baudrate: u32,
+    ifi_ipackets: u32,
+    ifi_ierrors: u32,
+    ifi_opackets: u32,
+    ifi_oerrors: u32,
+    ifi_collisions: u32,
+    ifi_ibytes: u32,
+    ifi_obytes: u32,
+    ifi_imcasts: u32,
+    ifi_omcasts: u32,
+    ifi_iqdrops: u32,
+    ifi_noproto: u32,
+    ifi_recvtiming: u32,
+    ifi_xmittiming: u32,
+    // TODO: chrono? (time value)
+    // (prev: timeval32)
+    ifi_lastchange: u64,
+    ifi_unused2: u32,
+    ifi_hwassist: u32,
+    ifi_reserved1: u32,
+    ifi_reserved2: u32,
+}
+
+pub struct InterfaceMessageHeader {
+    length: u16,
+    // TODO?
+    message_type: MessageType,
+    addrs: i32,
+    flags: i32,
+    index: u16,
+    interface_data: InterfaceData,
+}
+
+pub struct InterfaceAddressMessageHeader {
+    msglen: u16,
+    version: u8,
+    // TODO?
+    message_type: u8,
+    addrs: i32,
+    flags: i32,
+    index: u16,
+    metric: i32,
 }

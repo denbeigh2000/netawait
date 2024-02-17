@@ -308,6 +308,7 @@ name = "wait-for-net"
 version = "0.1.0"
 dependencies = [
  "bindgen",
+ "lazy_static",
  "socket2",
  "thiserror",
 ]
