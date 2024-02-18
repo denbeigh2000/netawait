@@ -1,12 +1,12 @@
 use crate::addresses::AddressParseError;
 use crate::header::RouteInfo;
 use route_sys::{
-    in_addr, route_request, rt_metrics, rt_msghdr, setsockopt, sockaddr_in, socket as raw_socket,
-    socklen_t, timeval, AF_INET, PF_ROUTE, RTA_DST, RTA_NETMASK, RTF_GATEWAY, RTF_UP, RTM_GET,
-    RTM_VERSION, RTV_HOPCOUNT, SOCK_RAW, SOL_SOCKET, SO_RCVTIMEO,
+    if_nametoindex, in_addr, route_request, rt_metrics, rt_msghdr, setsockopt, sockaddr_in,
+    socket as raw_socket, socklen_t, timeval, AF_INET, PF_ROUTE, RTA_DST, RTA_NETMASK, RTF_GATEWAY,
+    RTF_UP, RTM_GET, RTM_VERSION, RTV_HOPCOUNT, SOCK_RAW, SOL_SOCKET, SO_RCVTIMEO,
 };
 
-use std::ffi::c_void;
+use std::ffi::{c_void, CString};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::unix::io::FromRawFd;
@@ -39,7 +39,7 @@ pub struct RouteSocket {
 }
 
 impl RouteSocket {
-    pub fn new(timeout: Option<std::time::Duration>) -> io::Result<Self> {
+    pub fn new(timeout: Option<i64>) -> io::Result<Self> {
         let s = unsafe { raw_socket(PF_ROUTE as i32, SOCK_RAW as i32, 0) };
         if s < 0 {
             let err = io::Error::last_os_error();
@@ -48,8 +48,8 @@ impl RouteSocket {
 
         if let Some(t) = timeout {
             let tv = timeval {
-                tv_sec: t.as_secs() as i64,
-                tv_usec: (t.subsec_micros()) as i32,
+                tv_sec: t,
+                tv_usec: 0,
             };
 
             let tv_ptr = &tv as *const _ as *const c_void;
@@ -69,14 +69,33 @@ impl RouteSocket {
         Ok(Self { buf, inner, lock })
     }
 
-    pub fn request_default_ipv4(&mut self) -> io::Result<()> {
+    pub fn request_default_ipv4(&mut self, interface_name: Option<&str>) -> io::Result<()> {
+        let rtm_index = match interface_name {
+            None => 0,
+            Some(if_name) => {
+                // Get the index of the interface
+                let ifname_c = CString::new(if_name).unwrap();
+                let ifindex = unsafe { if_nametoindex(ifname_c.as_ptr()) };
+                if ifindex == 0 {
+                    // If if_nametoindex returns 0, it failed to find the interface
+                    let err = std::io::Error::last_os_error();
+                    log::warn!("error looking up interface index: {err}");
+
+                    // It's important that we don't throw here, so that we can
+                    // suport use cases where a network card is added later
+                }
+
+                ifindex as u16
+            }
+        };
+
         let raw_addr_4 = in_addr { s_addr: 0 };
         let request = route_request {
             rtm: rt_msghdr {
                 rtm_msglen: std::mem::size_of::<route_request>() as u16,
                 rtm_version: RTM_VERSION as u8,
                 rtm_type: RTM_GET as u8,
-                rtm_index: 0,
+                rtm_index,
                 rtm_flags: (RTF_UP as i32) | (RTF_GATEWAY as i32),
                 rtm_addrs: (RTA_DST as i32) | (RTA_NETMASK as i32),
                 rtm_pid: 0,
