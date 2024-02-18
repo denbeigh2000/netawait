@@ -39,6 +39,11 @@ impl RouteSocket {
             let data = &buf.as_slice()[0..size];
 
             let route_info = RouteInfo::from_raw(data).unwrap();
+
+            match route_info {
+                Some(i) => eprintln!("collected route: {}", i.print_self()),
+                None => eprintln!(),
+            }
         }
     }
 }

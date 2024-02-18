@@ -15,8 +15,8 @@ Similarly, you can use the other arrays (`routeflags`, `ifnetflags`, and `addrna
 */
 
 use route_sys::{
-    sockaddr_in, sockaddr_in6, AF_INET, RTA_AUTHOR, RTA_BRD, RTA_DST, RTA_GATEWAY, RTA_GENMASK,
-    RTA_IFA, RTA_IFP, RTA_NETMASK,
+    sockaddr_in, sockaddr_in6, AF_INET, AF_INET6, AF_LINK, RTA_AUTHOR, RTA_BRD, RTA_DST,
+    RTA_GATEWAY, RTA_GENMASK, RTA_IFA, RTA_IFP, RTA_NETMASK,
 };
 
 use std::{
@@ -62,12 +62,37 @@ impl AddressFlags {
     pub fn has_brd(&self) -> bool {
         self.0 & RTA_BRD != 0
     }
+
+    pub fn print_self(&self) -> String {
+        format!(
+            "
+        has dest: {},
+        has gateway: {},
+        has netmask: {},
+        has genmask: {},
+        has ifa: {},
+        has ifp: {},
+        has author: {},
+        has broadcast: {}
+",
+            self.has_destination(),
+            self.has_gateway(),
+            self.has_netmask(),
+            self.has_genmask(),
+            self.has_interface_address(),
+            self.has_interface_link(),
+            self.has_author(),
+            self.has_brd()
+        )
+    }
 }
 
 unsafe fn read_sockaddr_in(data: &[u8]) -> Option<SocketAddr> {
     let sockaddr_in_ptr: *const sockaddr_in = data.as_ptr() as *const _;
-    match (*sockaddr_in_ptr).sin_family as u32 {
+    let family = (*sockaddr_in_ptr).sin_family as u32;
+    match family {
         AF_INET => {
+            log::debug!("IPV4 address");
             let sockaddr_in_ptr: *const sockaddr_in = data.as_ptr() as *const _;
             let sockaddr_in = *sockaddr_in_ptr;
 
@@ -77,6 +102,7 @@ unsafe fn read_sockaddr_in(data: &[u8]) -> Option<SocketAddr> {
             Some(SocketAddr::V4(SocketAddrV4::new(addr, port)))
         }
         AF_INET6 => {
+            log::debug!("IPV6 address");
             let sockaddr_in6_ptr: *const sockaddr_in6 = data.as_ptr() as *const _;
             let sockaddr_in6 = *sockaddr_in6_ptr;
             let port = u16::from_be((sockaddr_in6).sin6_port);
@@ -89,8 +115,14 @@ unsafe fn read_sockaddr_in(data: &[u8]) -> Option<SocketAddr> {
                 addr, port, flowinfo, scope_id,
             )))
         }
-        // TODO: logging?
-        _ => None,
+        AF_LINK => {
+            log::debug!("discarding AF_LINK socket addr");
+            None
+        }
+        _ => {
+            log::warn!("Unsupported family {}", family);
+            None
+        }
     }
 }
 
@@ -99,6 +131,16 @@ pub fn parse_address(data: &[u8]) -> Result<(Option<SocketAddr>, usize), Infalli
     assert!(!data.is_empty());
 
     let sa_len = data[0] as usize;
+    log::debug!(
+        "parsing address of size {} (slice size {})",
+        sa_len,
+        data.len()
+    );
+
+    if sa_len == 0 {
+        log::warn!("sa_len was 0, trying to read empty address?");
+        return Ok((None, sa_len));
+    }
 
     // Make sure the buffer has enough data left
     assert!(sa_len <= data.len());
@@ -116,7 +158,11 @@ pub fn parse_addresses(data: &[u8]) -> Vec<SocketAddr> {
 
         // Make sure the buffer has enough data left:
         if sa_len > data.len() - offset {
-            // TODO: Log a warning that we received a partial address
+            log::warn!(
+                "received partial address? length was {}, buf size was {}",
+                sa_len,
+                data.len()
+            );
             break;
         }
 

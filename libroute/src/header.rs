@@ -1,10 +1,7 @@
 use std::{convert::Infallible, net::SocketAddr};
 
 use route_sys::{
-    rt_metrics, rt_msghdr, AF_INET, AF_INET6, RTF_GATEWAY, RTF_UP, RTM_ADD, RTM_CHANGE,
-    RTM_DELADDR, RTM_DELETE, RTM_DELMADDR, RTM_GET, RTM_GET2, RTM_IFINFO, RTM_IFINFO2, RTM_LOCK,
-    RTM_LOSING, RTM_MISS, RTM_NEWADDR, RTM_NEWMADDR, RTM_NEWMADDR2, RTM_OLDADD, RTM_OLDDEL,
-    RTM_REDIRECT, RTM_RESOLVE,
+    rt_metrics, rt_msghdr, RTF_GATEWAY, RTF_UP, RTM_ADD, RTM_CHANGE, RTM_DELETE, RTM_GET, RTM_GET2,
 };
 
 use crate::addresses::{parse_address, AddressFlags};
@@ -45,47 +42,6 @@ impl MessageType {
     }
 }
 
-#[derive(Clone)]
-pub struct Metrics {
-    /// MTU for this path
-    pub mtu: u32,
-    /// max hops expected
-    pub hop_count: u32,
-    /// lifetime for route, e.g. redirect
-    pub expire: i32,
-    /// inbound delay-bandwith product
-    pub recv_pipe: u32,
-    /// outbound delay-bandwith product
-    pub send_pipe: u32,
-    /// outbound gateway buffer limit
-    pub ss_threshold: u32,
-    /// estimated round trip time
-    pub rtt_time: u32,
-    /// estimated rtt variance
-    pub rtt_variance: u32,
-    /// packets sent (not in man page)
-    pub packets_sent: u32,
-    /// state(??) (not in man page)
-    pub state: u32,
-}
-
-impl From<rt_metrics> for Metrics {
-    fn from(value: rt_metrics) -> Self {
-        Self {
-            mtu: value.rmx_mtu,
-            hop_count: value.rmx_hopcount,
-            expire: value.rmx_expire,
-            recv_pipe: value.rmx_recvpipe,
-            send_pipe: value.rmx_sendpipe,
-            ss_threshold: value.rmx_ssthresh,
-            rtt_time: value.rmx_rtt,
-            rtt_variance: value.rmx_rttvar,
-            packets_sent: value.rmx_pksent,
-            state: value.rmx_state,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct RouteInfo {
     pub operation: MessageType,
@@ -99,7 +55,27 @@ pub struct RouteInfo {
 }
 
 impl RouteInfo {
+    pub fn print_self(&self) -> String {
+        format!(
+            "
+    operation:      {:?},
+    destination:    {:?},
+    gateway:        {:?},
+    netmask:        {:?},
+    broadcast:      {:?},
+    interface_addr: {:?},
+",
+            self.operation,
+            self.destination,
+            self.gateway,
+            self.netmask,
+            self.broadcast,
+            self.interface_addr,
+        )
+    }
+
     pub fn from_raw(data: &[u8]) -> Result<Option<Self>, Infallible> {
+        log::debug!("parsing a message of length {}", data.len());
         // Get the header
         let hdr_ptr: *const rt_msghdr = data.as_ptr() as *const _;
         let hdr = unsafe { *hdr_ptr };
@@ -136,6 +112,8 @@ impl RouteInfo {
         let addrs_data = &data[std::mem::size_of::<rt_msghdr>()..];
         let mut offset = 0;
 
+        // eprintln!("{}", addr_flags.print_self());
+
         // Apparently the order of these will correpond to which are defined
         // RTA_DST
         // RTA_GATEWAY
@@ -146,45 +124,60 @@ impl RouteInfo {
         // RTA_AUTHOR
         // RTA_BRD
         if addr_flags.has_destination() {
+            log::debug!("parsing destination");
             let (dest, len) = parse_address(&addrs_data[offset..]).unwrap();
+            log::debug!("parsed {} bytes", len);
             route_info.destination = dest;
             offset += len;
         }
 
         if addr_flags.has_gateway() {
+            log::debug!("parsing gateway");
             let (gw, len) = parse_address(&addrs_data[offset..]).unwrap();
+            log::debug!("parsed {} bytes", len);
             route_info.gateway = gw;
             offset += len;
         }
 
         if addr_flags.has_netmask() {
+            log::debug!("parsing netmask");
             let (netmask, len) = parse_address(&addrs_data[offset..]).unwrap();
             route_info.netmask = netmask;
+            log::debug!("parsed {} bytes", len);
             offset += len;
         }
 
         if addr_flags.has_genmask() {
+            log::debug!("parsing genmask");
             let (_, len) = parse_address(&addrs_data[offset..]).unwrap();
+            log::debug!("parsed {} bytes", len);
             offset += len;
         }
 
         if addr_flags.has_interface_link() {
+            log::debug!("parsing link");
             let (_, len) = parse_address(&addrs_data[offset..]).unwrap();
+            log::debug!("parsed {} bytes", len);
             offset += len;
         }
 
         if addr_flags.has_interface_address() {
+            log::debug!("parsing if address");
             let (interface_addr, len) = parse_address(&addrs_data[offset..]).unwrap();
             route_info.interface_addr = interface_addr;
+            log::debug!("parsed {} bytes", len);
             offset += len;
         }
 
         if addr_flags.has_author() {
+            log::debug!("parsing author");
             let (_, len) = parse_address(&addrs_data[offset..]).unwrap();
+            log::debug!("parsed {} bytes", len);
             offset += len;
         }
 
         if addr_flags.has_brd() {
+            log::debug!("parsing broadcast");
             (route_info.broadcast, _) = parse_address(&addrs_data[offset..]).unwrap();
         }
 
