@@ -1,4 +1,5 @@
-use libroute::header::MessageType;
+use libroute::header::Header;
+use libroute::route::MessageType;
 use libroute::socket::{ReadError, RouteSocket};
 
 use clap::Parser;
@@ -28,7 +29,14 @@ fn real_main() -> Result<(), ReadError> {
     let mut rs = RouteSocket::new(args.timeout_secs).unwrap();
     rs.request_default_ipv4(args.interface.as_deref()).unwrap();
     loop {
-        let info = rs.recv()?;
+        let packet = rs.recv()?;
+        let info = match packet {
+            Header::Route(i) => i,
+            _ => {
+                log::info!("ignoring message: {packet:?}");
+                continue;
+            }
+        };
         match info.operation {
             MessageType::Add | MessageType::Get => (),
             _ => continue,

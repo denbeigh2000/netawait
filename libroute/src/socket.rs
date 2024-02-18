@@ -1,5 +1,5 @@
 use crate::addresses::AddressParseError;
-use crate::header::RouteInfo;
+use crate::header::Header;
 use route_sys::{
     if_nametoindex, in_addr, route_request, rt_metrics, rt_msghdr, setsockopt, sockaddr_in,
     socket as raw_socket, socklen_t, timeval, AF_INET, PF_ROUTE, RTA_DST, RTA_NETMASK, RTF_GATEWAY,
@@ -163,13 +163,17 @@ impl RouteSocket {
         Ok(())
     }
 
-    fn recv_raw(&mut self) -> Result<Option<RouteInfo>, ReadError> {
-        let size = self.inner.read(&mut self.buf)?;
-        let info = RouteInfo::from_raw(&self.buf[0..size])?;
-        Ok(info)
+    fn recv_raw(&mut self) -> Result<Option<Header>, ReadError> {
+        Ok(match self.inner.read(&mut self.buf)? {
+            0 => {
+                log::warn!("empty read?");
+                None
+            }
+            size => Header::from_raw(&self.buf[..size])?,
+        })
     }
 
-    pub fn recv(&mut self) -> Result<RouteInfo, ReadError> {
+    pub fn recv(&mut self) -> Result<Header, ReadError> {
         loop {
             if let Some(info) = self.recv_raw()? {
                 return Ok(info);
