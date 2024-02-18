@@ -1,12 +1,20 @@
+use std::{convert::Infallible, net::SocketAddr};
+
 use route_sys::{
-    rt_metrics, rt_msghdr, RTM_ADD, RTM_CHANGE, RTM_DELADDR, RTM_DELETE, RTM_DELMADDR, RTM_GET,
-    RTM_GET2, RTM_IFINFO, RTM_IFINFO2, RTM_LOCK, RTM_LOSING, RTM_MISS, RTM_NEWADDR, RTM_NEWMADDR,
-    RTM_NEWMADDR2, RTM_OLDADD, RTM_OLDDEL, RTM_REDIRECT, RTM_RESOLVE,
+    rt_metrics, rt_msghdr, AF_INET, AF_INET6, RTF_GATEWAY, RTF_UP, RTM_ADD, RTM_CHANGE,
+    RTM_DELADDR, RTM_DELETE, RTM_DELMADDR, RTM_GET, RTM_GET2, RTM_IFINFO, RTM_IFINFO2, RTM_LOCK,
+    RTM_LOSING, RTM_MISS, RTM_NEWADDR, RTM_NEWMADDR, RTM_NEWMADDR2, RTM_OLDADD, RTM_OLDDEL,
+    RTM_REDIRECT, RTM_RESOLVE,
 };
 
+use crate::addresses::{parse_address, AddressFlags};
+
+#[derive(Clone, Debug)]
 /// Type of message from kernel
 /// Comments taken from source code
 /// https://opensource.apple.com/source/network_cmds/network_cmds-606.40.2/route.tproj/route.c.auto.html
+///
+/// (Only handing the changes related to the routing table)
 pub enum MessageType {
     /// Add Route
     Add,
@@ -14,36 +22,8 @@ pub enum MessageType {
     Delete,
     /// Change Metrics or flags
     Change,
-    /// Report Metrics
+    /// Respond to query
     Get,
-    /// Kernel Suspects Partitioning
-    Losing,
-    /// Told to use different route
-    Redirect,
-    /// Lookup failed on this address
-    Miss,
-    /// fix specified metrics
-    Lock,
-    /// caused by SIOCADDRT
-    Oldadd,
-    /// caused by SIOCDELRT
-    Olddel,
-    /// Route created by cloning
-    Resolve,
-    /// address being added to iface
-    Newaddr,
-    /// address being removed from iface
-    Deladdr,
-    /// iface status change
-    Ifinfo,
-    /// new multicast group membership on iface
-    Newmaddr,
-    /// multicast group membership removed from iface
-    Delmaddr,
-    // Undocumented
-    Ifinfo2,
-    // Undocumented
-    Newmaddr2,
     // Undocumented
     Get2,
 }
@@ -52,35 +32,20 @@ pub enum MessageType {
 #[error("invalid message type {0}, needs to be below 21")]
 pub struct MessageTypeParseError(u8);
 
-impl TryFrom<u8> for MessageType {
-    type Error = MessageTypeParseError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
+impl MessageType {
+    pub fn from(value: u8) -> Option<Self> {
         match value.into() {
-            RTM_ADD => Ok(Self::Add),
-            RTM_DELETE => Ok(Self::Delete),
-            RTM_CHANGE => Ok(Self::Change),
-            RTM_GET => Ok(Self::Get),
-            RTM_LOSING => Ok(Self::Losing),
-            RTM_REDIRECT => Ok(Self::Redirect),
-            RTM_MISS => Ok(Self::Miss),
-            RTM_LOCK => Ok(Self::Lock),
-            RTM_OLDADD => Ok(Self::Oldadd),
-            RTM_OLDDEL => Ok(Self::Olddel),
-            RTM_RESOLVE => Ok(Self::Resolve),
-            RTM_NEWADDR => Ok(Self::Newaddr),
-            RTM_DELADDR => Ok(Self::Deladdr),
-            RTM_IFINFO => Ok(Self::Ifinfo),
-            RTM_NEWMADDR => Ok(Self::Newmaddr),
-            RTM_DELMADDR => Ok(Self::Delmaddr),
-            RTM_IFINFO2 => Ok(Self::Ifinfo2),
-            RTM_NEWMADDR2 => Ok(Self::Newmaddr2),
-            RTM_GET2 => Ok(Self::Get2),
-            _ => Err(MessageTypeParseError(value)),
+            RTM_ADD => Some(Self::Add),
+            RTM_DELETE => Some(Self::Delete),
+            RTM_CHANGE => Some(Self::Change),
+            RTM_GET => Some(Self::Get),
+            RTM_GET2 => Some(Self::Get2),
+            _ => None,
         }
     }
 }
 
+#[derive(Clone)]
 pub struct Metrics {
     /// MTU for this path
     pub mtu: u32,
@@ -121,101 +86,154 @@ impl From<rt_metrics> for Metrics {
     }
 }
 
-#[allow(dead_code)]
-/// Mostly equivalent to rt_msghdr from `man 4 route`
-pub struct MessageHeader {
-    /// to skip over non-understood messages
-    length: u16,
-    /// message type
-    message_type: MessageType,
-    /// index for associated ifp or interface scope
-    index: u16,
-    /// identify sender
-    pid: i32,
-    /// bitmask identifying sockaddrs in msg
-    addrs: i32,
-    /// for sender to identify action
-    seq: i32,
-    /// why failed
-    errno: i32,
-    /// flags, incl kern & message, e.g. DONE
-    flags: i32,
-    /// which values we are initializing
-    inits: u32,
-    /// metrics themselves
-    metrics: Metrics,
+#[derive(Debug)]
+pub struct RouteInfo {
+    pub operation: MessageType,
+    pub destination: Option<SocketAddr>,
+    pub gateway: Option<SocketAddr>,
+    pub netmask: Option<SocketAddr>,
+    pub broadcast: Option<SocketAddr>,
+    pub interface_addr: Option<SocketAddr>,
+    pub flags: RoutingFlags, // parsed from rt_flags in rt_msghdr
+    pub metrics: RouteMetrics,
 }
 
-impl TryFrom<rt_msghdr> for MessageHeader {
-    type Error = MessageTypeParseError;
+impl RouteInfo {
+    pub fn from_raw(data: &[u8]) -> Result<Option<Self>, Infallible> {
+        // Get the header
+        let hdr_ptr: *const rt_msghdr = data.as_ptr() as *const _;
+        let hdr = unsafe { *hdr_ptr };
 
-    fn try_from(value: rt_msghdr) -> Result<Self, Self::Error> {
-        Ok(Self {
-            addrs: value.rtm_addrs,
-            errno: value.rtm_errno,
-            flags: value.rtm_flags,
-            index: value.rtm_index,
-            inits: value.rtm_inits,
-            length: value.rtm_msglen,
-            pid: value.rtm_pid,
-            seq: value.rtm_seq,
-            message_type: MessageType::try_from(value.rtm_type)?,
-            metrics: Metrics::from(value.rtm_rmx),
-        })
+        // Validate the message type
+
+        let op = match (hdr).rtm_type as u32 {
+            RTM_ADD => MessageType::Add,
+            RTM_DELETE => MessageType::Delete,
+            RTM_GET => MessageType::Get,
+            RTM_CHANGE => MessageType::Change,
+            // I don't know what this is, but tell apple I hate them
+            RTM_GET2 => MessageType::Get2,
+            _ => return Ok(None),
+        };
+
+        // Get the flags
+        let flags = RoutingFlags::from_raw(hdr.rtm_flags);
+
+        // Initialize variable to store route data
+        let mut route_info = RouteInfo {
+            operation: op,
+            flags,
+            metrics: RouteMetrics::from_raw(&hdr.rtm_rmx),
+            destination: None,
+            gateway: None,
+            netmask: None,
+            broadcast: None,
+            interface_addr: None,
+        };
+
+        // Start of parsing sockaddr structures
+        let addr_flags = AddressFlags::new(hdr.rtm_addrs as u32);
+        let addrs_data = &data[std::mem::size_of::<rt_msghdr>()..];
+        let mut offset = 0;
+
+        // Apparently the order of these will correpond to which are defined
+        // RTA_DST
+        // RTA_GATEWAY
+        // RTA_NETMASK
+        // RTA_GENMASK
+        // RTA_IFP
+        // RTA_IFA
+        // RTA_AUTHOR
+        // RTA_BRD
+        if addr_flags.has_destination() {
+            let (dest, len) = parse_address(&addrs_data[offset..]).unwrap();
+            route_info.destination = dest;
+            offset += len;
+        }
+
+        if addr_flags.has_gateway() {
+            let (gw, len) = parse_address(&addrs_data[offset..]).unwrap();
+            route_info.gateway = gw;
+            offset += len;
+        }
+
+        if addr_flags.has_netmask() {
+            let (netmask, len) = parse_address(&addrs_data[offset..]).unwrap();
+            route_info.netmask = netmask;
+            offset += len;
+        }
+
+        if addr_flags.has_genmask() {
+            let (_, len) = parse_address(&addrs_data[offset..]).unwrap();
+            offset += len;
+        }
+
+        if addr_flags.has_interface_link() {
+            let (_, len) = parse_address(&addrs_data[offset..]).unwrap();
+            offset += len;
+        }
+
+        if addr_flags.has_interface_address() {
+            let (interface_addr, len) = parse_address(&addrs_data[offset..]).unwrap();
+            route_info.interface_addr = interface_addr;
+            offset += len;
+        }
+
+        if addr_flags.has_author() {
+            let (_, len) = parse_address(&addrs_data[offset..]).unwrap();
+            offset += len;
+        }
+
+        if addr_flags.has_brd() {
+            (route_info.broadcast, _) = parse_address(&addrs_data[offset..]).unwrap();
+        }
+
+        Ok(Some(route_info))
     }
 }
 
-pub struct InterfaceData {
-    ifi_type: char,
-    ifi_typelen: char,
-    ifi_physical: char,
-    ifi_addrlen: char,
-    ifi_hdrlen: char,
-    ifi_recvquota: char,
-    ifi_xmitquota: char,
-    ifi_unused1: char,
-    ifi_mtu: u32,
-    ifi_metric: u32,
-    ifi_baudrate: u32,
-    ifi_ipackets: u32,
-    ifi_ierrors: u32,
-    ifi_opackets: u32,
-    ifi_oerrors: u32,
-    ifi_collisions: u32,
-    ifi_ibytes: u32,
-    ifi_obytes: u32,
-    ifi_imcasts: u32,
-    ifi_omcasts: u32,
-    ifi_iqdrops: u32,
-    ifi_noproto: u32,
-    ifi_recvtiming: u32,
-    ifi_xmittiming: u32,
-    // TODO: chrono? (time value)
-    // (prev: timeval32)
-    ifi_lastchange: u64,
-    ifi_unused2: u32,
-    ifi_hwassist: u32,
-    ifi_reserved1: u32,
-    ifi_reserved2: u32,
+#[derive(Debug)]
+pub struct RoutingFlags(i32);
+
+impl RoutingFlags {
+    fn from_raw(flags: i32) -> Self {
+        Self(flags)
+    }
+
+    fn is_up(&self) -> bool {
+        self.0 & (RTF_UP as i32) != 0
+    }
+
+    fn is_gateway(&self) -> bool {
+        self.0 & (RTF_GATEWAY as i32) != 0
+    }
 }
 
-pub struct InterfaceMessageHeader {
-    length: u16,
-    // TODO?
-    message_type: MessageType,
-    addrs: i32,
-    flags: i32,
-    index: u16,
-    interface_data: InterfaceData,
+#[derive(Debug)]
+pub struct RouteMetrics {
+    pub mtu: u64,
+    pub hopcount: u32,
+    pub expire: i32,
+    pub recvpipe: u64,
+    pub sendpipe: u64,
+    pub ssthresh: u64,
+    pub rtt: u32,
+    pub rttvar: u32,
+    pub packets_sent: u64,
 }
 
-pub struct InterfaceAddressMessageHeader {
-    msglen: u16,
-    version: u8,
-    // TODO?
-    message_type: u8,
-    addrs: i32,
-    flags: i32,
-    index: u16,
-    metric: i32,
+impl RouteMetrics {
+    pub fn from_raw(metrics: &rt_metrics) -> Self {
+        Self {
+            mtu: metrics.rmx_mtu as u64,
+            hopcount: metrics.rmx_hopcount,
+            expire: metrics.rmx_expire,
+            recvpipe: metrics.rmx_recvpipe as u64,
+            sendpipe: metrics.rmx_sendpipe as u64,
+            ssthresh: metrics.rmx_ssthresh as u64,
+            rtt: metrics.rmx_rtt,
+            rttvar: metrics.rmx_rttvar,
+            packets_sent: metrics.rmx_pksent as u64,
+        }
+    }
 }
