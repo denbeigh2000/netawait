@@ -1,41 +1,75 @@
+use crate::addresses::AddressParseError;
 use crate::header::RouteInfo;
 use route_sys::{
-    in_addr, route_request, rt_metrics, rt_msghdr, sockaddr_in, socket as raw_socket, AF_INET,
-    PF_ROUTE, RTA_DST, RTA_NETMASK, RTF_GATEWAY, RTF_UP, RTM_GET, RTM_VERSION, RTV_HOPCOUNT,
-    SOCK_RAW,
+    in_addr, route_request, rt_metrics, rt_msghdr, setsockopt, sockaddr_in, socket as raw_socket,
+    socklen_t, timeval, AF_INET, PF_ROUTE, RTA_DST, RTA_NETMASK, RTF_GATEWAY, RTF_UP, RTM_GET,
+    RTM_VERSION, RTV_HOPCOUNT, SOCK_RAW, SOL_SOCKET, SO_RCVTIMEO,
 };
 
-use std::default::Default;
+use std::ffi::c_void;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::io::FromRawFd;
 use std::sync::Mutex;
 
-pub struct RouteSocket {
-    lock: Mutex<i32>,
-    inner: File,
+#[derive(thiserror::Error, Debug)]
+pub enum ReadError {
+    #[error("read timed out")]
+    Timeout,
+    #[error("IO error: {0}")]
+    IO(io::Error),
+
+    #[error("error parsing addresses: {0}")]
+    ParsingAddress(#[from] AddressParseError),
 }
 
-impl Default for RouteSocket {
-    fn default() -> Self {
-        let inner = unsafe {
-            let s = raw_socket(PF_ROUTE as i32, SOCK_RAW as i32, 0);
-            if s < 0 {
-                let err = std::io::Error::last_os_error();
-                // TODO
-                panic!("{}", err);
-            };
-
-            File::from_raw_fd(s)
-        };
-
-        let lock = Mutex::new(0);
-        Self { inner, lock }
+impl From<io::Error> for ReadError {
+    fn from(value: io::Error) -> Self {
+        match value.raw_os_error() {
+            Some(11) | Some(35) => Self::Timeout,
+            _ => Self::IO(value),
+        }
     }
 }
 
+pub struct RouteSocket {
+    lock: Mutex<i32>,
+    buf: [u8; 2048],
+    inner: File,
+}
+
 impl RouteSocket {
-    pub fn request_default_ipv4(&mut self) -> Result<(), std::io::Error> {
+    pub fn new(timeout: Option<std::time::Duration>) -> io::Result<Self> {
+        let s = unsafe { raw_socket(PF_ROUTE as i32, SOCK_RAW as i32, 0) };
+        if s < 0 {
+            let err = io::Error::last_os_error();
+            return Err(err);
+        };
+
+        if let Some(t) = timeout {
+            let tv = timeval {
+                tv_sec: t.as_secs() as i64,
+                tv_usec: (t.subsec_micros()) as i32,
+            };
+
+            let tv_ptr = &tv as *const _ as *const c_void;
+            let tv_size = std::mem::size_of::<timeval>() as socklen_t;
+            let ret =
+                unsafe { setsockopt(s, SOL_SOCKET as i32, SO_RCVTIMEO as i32, tv_ptr, tv_size) };
+            if ret != 0 {
+                let err = io::Error::last_os_error();
+                return Err(err);
+            }
+        }
+
+        let inner = unsafe { File::from_raw_fd(s) };
+
+        let lock = Mutex::new(0);
+        let buf = [0u8; 2048];
+        Ok(Self { buf, inner, lock })
+    }
+
+    pub fn request_default_ipv4(&mut self) -> io::Result<()> {
         let raw_addr_4 = in_addr { s_addr: 0 };
         let request = route_request {
             rtm: rt_msghdr {
@@ -96,19 +130,37 @@ impl RouteSocket {
         *seq
     }
 
-    fn send(&mut self, request_bytes: &[u8]) -> Result<(), std::io::Error> {
-        self.inner.write_all(request_bytes)
+    fn send(&mut self, request_bytes: &[u8]) -> io::Result<()> {
+        if let Err(e) = self.inner.write_all(request_bytes) {
+            // NOTE: macos returns "No such process" when you request the
+            // default route and it's not evailable.
+            if e.raw_os_error() != Some(3) {
+                return Err(e);
+            }
+
+            log::info!("ignoring ENSCH error (given when requesting unavailable default network)");
+        }
+
+        Ok(())
     }
 
-    pub fn monitor(&mut self) {
-        let mut buf = [0u8; 2048];
+    fn recv_raw(&mut self) -> Result<Option<RouteInfo>, ReadError> {
+        let size = self.inner.read(&mut self.buf)?;
+        let info = RouteInfo::from_raw(&self.buf[0..size])?;
+        Ok(info)
+    }
+
+    pub fn recv(&mut self) -> Result<RouteInfo, ReadError> {
         loop {
-            let size = self.inner.read(&mut buf).unwrap();
-            let data = &buf.as_slice()[0..size];
+            if let Some(info) = self.recv_raw()? {
+                return Ok(info);
+            }
+        }
+    }
 
-            let route_info = RouteInfo::from_raw(data).unwrap();
-
-            match route_info {
+    pub fn monitor(&mut self) -> Result<(), ReadError> {
+        loop {
+            match self.recv_raw()? {
                 Some(i) => eprintln!("collected route: {}", i.print_self()),
                 None => eprintln!(),
             }

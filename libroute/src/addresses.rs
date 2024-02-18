@@ -19,10 +19,7 @@ use route_sys::{
     RTA_GATEWAY, RTA_GENMASK, RTA_IFA, RTA_IFP, RTA_NETMASK,
 };
 
-use std::{
-    convert::Infallible,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 pub struct AddressFlags(u32);
 
@@ -126,9 +123,18 @@ unsafe fn read_sockaddr_in(data: &[u8]) -> Option<SocketAddr> {
     }
 }
 
-pub fn parse_address(data: &[u8]) -> Result<(Option<SocketAddr>, usize), Infallible> {
-    // TODO: real errors
-    assert!(!data.is_empty());
+#[derive(thiserror::Error, Debug)]
+pub enum AddressParseError {
+    #[error("given slice is empty")]
+    DataEmpty,
+    #[error("data given is larger than slice given")]
+    PartialData,
+}
+
+pub fn parse_address(data: &[u8]) -> Result<(Option<SocketAddr>, usize), AddressParseError> {
+    if data.is_empty() {
+        return Err(AddressParseError::DataEmpty);
+    }
 
     let sa_len = data[0] as usize;
     log::debug!(
@@ -143,7 +149,9 @@ pub fn parse_address(data: &[u8]) -> Result<(Option<SocketAddr>, usize), Infalli
     }
 
     // Make sure the buffer has enough data left
-    assert!(sa_len <= data.len());
+    if sa_len > data.len() {
+        return Err(AddressParseError::PartialData);
+    }
 
     let sa_data = &data[..sa_len];
     let res = unsafe { read_sockaddr_in(sa_data) };
