@@ -1,32 +1,15 @@
-/*
-* In the context of this program, these arrays (`metricnames`, `routeflags`, `ifnetflags`, and `addrnames`) are predefined strings that contain names or labels representing certain attributes or flags. These arrays are used as input values for the `s` parameter of the `bprintf` function.
-
-When the `bprintf` function is called with one of these arrays as the `s` parameter, it will iterate through the characters in the array and selectively print characters based on the value of the `b` parameter.
-
-For example, let's say you want to print only the characters from the `metricnames` that correspond to bits 2, 3, and 5 set in the `b` parameter. You would call the `bprintf` function like this:
-
-```c
-bprintf(fp, 0b00110100, metricnames);
-```
-
-In this case, the `b` parameter has bits 2, 3, and 5 set to 1. The `bprintf` function will print the corresponding characters ('rttvar', 'rtt', 'sendpipe') from the `metricnames` array to the specified file pointer `fp`.
-
-Similarly, you can use the other arrays (`routeflags`, `ifnetflags`, and `addrnames`) in a similar way to selectively print characters based on the specific bits set in the `b` parameter.
-*/
-
 use route_sys::{
-    ifa_msghdr, sockaddr_in, sockaddr_in6, AF_INET, AF_INET6, AF_LINK, RTA_AUTHOR, RTA_BRD,
-    RTA_DST, RTA_GATEWAY, RTA_GENMASK, RTA_IFA, RTA_IFP, RTA_NETMASK, RTF_BLACKHOLE, RTF_BROADCAST,
-    RTF_CLONING, RTF_CONDEMNED, RTF_DEAD, RTF_DELCLONE, RTF_DONE, RTF_DYNAMIC, RTF_GATEWAY,
-    RTF_HOST, RTF_IFREF, RTF_IFSCOPE, RTF_LLINFO, RTF_LOCAL, RTF_MODIFIED, RTF_MULTICAST,
-    RTF_NOIFREF, RTF_PRCLONING, RTF_PROTO1, RTF_PROTO2, RTF_PROTO3, RTF_PROXY, RTF_REJECT,
-    RTF_ROUTER, RTF_STATIC, RTF_UP, RTF_WASCLONED, RTF_XRESOLVE, RTM_DELADDR, RTM_NEWADDR,
+    ifa_msghdr, sockaddr_dl, sockaddr_in, sockaddr_in6, AF_INET, AF_INET6, AF_LINK, RTA_AUTHOR,
+    RTA_BRD, RTA_DST, RTA_GATEWAY, RTA_GENMASK, RTA_IFA, RTA_IFP, RTA_NETMASK, RTF_BLACKHOLE,
+    RTF_BROADCAST, RTF_CLONING, RTF_CONDEMNED, RTF_DEAD, RTF_DELCLONE, RTF_DONE, RTF_DYNAMIC,
+    RTF_GATEWAY, RTF_HOST, RTF_IFREF, RTF_IFSCOPE, RTF_LLINFO, RTF_LOCAL, RTF_MODIFIED,
+    RTF_MULTICAST, RTF_NOIFREF, RTF_PRCLONING, RTF_PROTO1, RTF_PROTO2, RTF_PROTO3, RTF_PROXY,
+    RTF_REJECT, RTF_ROUTER, RTF_STATIC, RTF_UP, RTF_WASCLONED, RTF_XRESOLVE, RTM_DELADDR,
+    RTM_NEWADDR,
 };
 
-use std::{
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    u32,
-};
+use std::mem;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
 pub struct AddressFlags(u32);
 
@@ -91,7 +74,48 @@ impl AddressFlags {
     }
 }
 
-unsafe fn read_sockaddr_in(data: &[u8]) -> Option<SocketAddr> {
+#[derive(Debug)]
+pub enum SockAddr {
+    V4(SocketAddrV4),
+    V6(SocketAddrV6),
+    Link(DataLinkAddr),
+}
+
+#[derive(Debug)]
+pub struct DataLinkAddr {
+    index: u16,
+    // Leaving the gigantic enum of this out for now
+    // interface_type: InterfaceType,
+    link_layer_addr: Vec<u8>,
+    interface_name: String,
+    // Discarding link layer selector
+}
+
+impl DataLinkAddr {
+    fn format_addr(&self) -> String {
+        let strs: Vec<String> = self
+            .link_layer_addr
+            .iter()
+            .map(|b| format!("{:02X}", b))
+            .collect();
+        strs.join(":")
+    }
+
+    pub fn print_self(&self) -> String {
+        format!(
+            "
+        index: {}
+        link addr: {}
+        if name: {}
+        ",
+            self.index,
+            self.format_addr(),
+            self.interface_name
+        )
+    }
+}
+
+unsafe fn read_sockaddr_in(data: &[u8]) -> Option<SockAddr> {
     let sockaddr_in_ptr: *const sockaddr_in = data.as_ptr() as *const _;
     let family = (*sockaddr_in_ptr).sin_family as u32;
     match family {
@@ -103,7 +127,7 @@ unsafe fn read_sockaddr_in(data: &[u8]) -> Option<SocketAddr> {
             let port = u16::from_be(sockaddr_in.sin_port);
             let s_addr = u32::from_be(sockaddr_in.sin_addr.s_addr);
             let addr = Ipv4Addr::from(s_addr.to_be_bytes());
-            Some(SocketAddr::V4(SocketAddrV4::new(addr, port)))
+            Some(SockAddr::V4(SocketAddrV4::new(addr, port)))
         }
         AF_INET6 => {
             log::debug!("IPV6 address");
@@ -115,13 +139,38 @@ unsafe fn read_sockaddr_in(data: &[u8]) -> Option<SocketAddr> {
 
             let flowinfo = (sockaddr_in6).sin6_flowinfo;
             let scope_id = (sockaddr_in6).sin6_scope_id;
-            Some(SocketAddr::V6(SocketAddrV6::new(
+            Some(SockAddr::V6(SocketAddrV6::new(
                 addr, port, flowinfo, scope_id,
             )))
         }
         AF_LINK => {
-            log::debug!("discarding AF_LINK socket addr");
-            None
+            log::debug!("Data link(?) address");
+            let sockaddr_dl_ptr: *const sockaddr_dl = data.as_ptr() as *const _;
+            let addr = *sockaddr_dl_ptr;
+
+            let index = addr.sdl_index;
+            let data: [u8; 12] = unsafe { mem::transmute(addr.sdl_data) };
+
+            log::debug!("nlen: {}, alen: {}", addr.sdl_nlen, addr.sdl_alen);
+
+            let ll_addr_start = addr.sdl_nlen as usize;
+            let ll_addr_end = ll_addr_start + addr.sdl_alen as usize;
+            let link_layer_bytes = &data[ll_addr_start..ll_addr_end];
+            let link_layer_addr = Vec::from(link_layer_bytes);
+            let name_slice = &data[..addr.sdl_nlen as usize];
+            log::debug!("name slice: {:?}", name_slice);
+            let interface_name = String::from_utf8_lossy(name_slice).to_string().clone();
+            log::debug!("index: {:?}, if name: {:?}", index, interface_name);
+
+            let o = Some(SockAddr::Link(DataLinkAddr {
+                index,
+                link_layer_addr,
+                interface_name,
+            }));
+
+            log::debug!("{o:?}");
+
+            o
         }
         _ => {
             log::warn!("Unsupported family {}", family);
@@ -138,7 +187,7 @@ pub enum AddressParseError {
     PartialData,
 }
 
-pub fn parse_address(data: &[u8]) -> Result<(Option<SocketAddr>, usize), AddressParseError> {
+pub fn parse_address(data: &[u8]) -> Result<(Option<SockAddr>, usize), AddressParseError> {
     if data.is_empty() {
         return Err(AddressParseError::DataEmpty);
     }
@@ -165,7 +214,7 @@ pub fn parse_address(data: &[u8]) -> Result<(Option<SocketAddr>, usize), Address
     Ok((res, sa_len))
 }
 
-pub fn parse_addresses(data: &[u8]) -> Vec<SocketAddr> {
+pub fn parse_addresses(data: &[u8]) -> Vec<SockAddr> {
     let mut offset = 0;
     let mut addrs = Vec::new();
     while offset < data.len() {
@@ -333,11 +382,13 @@ pub struct AddressInfo {
     pub metric: i32,
     // TODO: Need a flag struct for address changes that is not about addresses
     pub flags: AddressInfoFlags,
-    pub destination: Option<SocketAddr>,
-    pub gateway: Option<SocketAddr>,
-    pub netmask: Option<SocketAddr>,
-    pub broadcast: Option<SocketAddr>,
-    pub interface_addr: Option<SocketAddr>,
+    pub destination: Option<SockAddr>,
+    pub gateway: Option<SockAddr>,
+    pub netmask: Option<SockAddr>,
+    pub genmask: Option<SockAddr>,
+    pub broadcast: Option<SockAddr>,
+    pub interface_addr: Option<SockAddr>,
+    pub interface_link: Option<SockAddr>,
 }
 
 impl AddressInfo {
@@ -350,8 +401,10 @@ impl AddressInfo {
     destination: {:?}
     gateway: {:?}
     netmask: {:?}
+    genmask: {:?}
     broadcast: {:?}
     interface_addr: {:?}
+    interface_link: {:?}
 
     is up: {}
     is gateway: {}
@@ -367,8 +420,10 @@ impl AddressInfo {
             self.destination,
             self.gateway,
             self.netmask,
+            self.genmask,
             self.broadcast,
             self.interface_addr,
+            self.interface_link,
             self.flags.is_up(),
             self.flags.is_gateway(),
             self.flags.is_dead(),
@@ -408,8 +463,10 @@ impl AddressInfo {
             destination: None,
             gateway: None,
             netmask: None,
+            genmask: None,
             broadcast: None,
             interface_addr: None,
+            interface_link: None,
         };
 
         // Apparently the order of these will correpond to which are defined
@@ -447,14 +504,16 @@ impl AddressInfo {
 
         if addr_flags.has_genmask() {
             log::debug!("parsing genmask");
-            let (_, len) = parse_address(&addrs_data[offset..])?;
+            let (genmask, len) = parse_address(&addrs_data[offset..])?;
+            address_info.genmask = genmask;
             log::debug!("parsed {} bytes", len);
             offset += len;
         }
 
         if addr_flags.has_interface_link() {
             log::debug!("parsing link");
-            let (_, len) = parse_address(&addrs_data[offset..])?;
+            let (if_link, len) = parse_address(&addrs_data[offset..])?;
+            address_info.interface_link = if_link;
             log::debug!("parsed {} bytes", len);
             offset += len;
         }
@@ -476,7 +535,8 @@ impl AddressInfo {
 
         if addr_flags.has_brd() {
             log::debug!("parsing broadcast");
-            (address_info.broadcast, _) = parse_address(&addrs_data[offset..])?;
+            let (broadcast, _) = parse_address(&addrs_data[offset..])?;
+            address_info.broadcast = broadcast;
         }
         Ok(Some(address_info))
     }

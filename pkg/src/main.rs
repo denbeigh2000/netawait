@@ -1,10 +1,11 @@
+use libroute::addresses::SockAddr;
 use libroute::header::Header;
 use libroute::route::MessageType;
-use libroute::socket::{ReadError, RouteSocket};
+use libroute::socket::{get_ifindex, ReadError, RouteSocket};
 
 use clap::Parser;
 
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 lazy_static::lazy_static! { static ref ZERO_IPV4: Ipv4Addr = Ipv4Addr::from([0, 0, 0, 0]);
     static ref ZERO_IPV6: Ipv6Addr = Ipv6Addr::from([0, 0, 0, 0, 0, 0, 0, 0]);
@@ -30,6 +31,7 @@ fn real_main() -> Result<(), ReadError> {
     rs.request_default_ipv4(args.interface.as_deref()).unwrap();
     loop {
         let packet = rs.recv()?;
+        log::debug!("received: {}", packet.print_self());
         let info = match packet {
             Header::Route(i) => i,
             _ => {
@@ -42,38 +44,40 @@ fn real_main() -> Result<(), ReadError> {
             _ => continue,
         }
 
-        if let Some(ref intf) = args.interface {
-            match info.interface_name {
-                None => continue,
-                Some(ref given_if) => {
-                    if given_if != intf {
-                        continue;
-                    }
-                }
-            }
-        }
+        // if let Some(ref intf) = args.interface {
+        //     match info.interface_name {
+        //         None => continue,
+        //         Some(ref given_if) => {
+        //             if given_if != intf {
+        //                 continue;
+        //             }
+        //         }
+        //     }
+        // }
 
-        if !(info.flags.is_up() && info.flags.has_gateway()) {
+        if !(info.flags.is_up() && info.gateway.is_some()) {
             continue;
         }
 
         match info.destination {
-            Some(SocketAddr::V4(addr)) => {
+            Some(SockAddr::V4(addr)) => {
                 if addr.ip().octets() == ZERO_IPV4.octets() {
                     log::info!("found default IPV4 route");
-                    eprintln!("{}", info.print_self());
                     return Ok(());
                 }
 
                 continue;
             }
-            Some(SocketAddr::V6(addr)) => {
+            Some(SockAddr::V6(addr)) => {
                 if addr.ip().octets() == ZERO_IPV6.octets() {
                     log::info!("found default IPV6 route");
-                    eprintln!("{}", info.print_self());
                     return Ok(());
                 }
 
+                continue;
+            }
+            Some(SockAddr::Link(link)) => {
+                log::info!("discarding AF_LINK packet: {:?}", link);
                 continue;
             }
             None => continue,

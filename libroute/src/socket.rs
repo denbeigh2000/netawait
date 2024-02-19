@@ -190,3 +190,11 @@ impl RouteSocket {
         }
     }
 }
+
+pub fn get_ifindex(ifname: &str) -> Result<u32, io::Error> {
+    let c_ifname = CString::new(ifname)?;
+    match unsafe { if_nametoindex(c_ifname.as_ptr()) } {
+        0 => Err(io::Error::last_os_error()),
+        i => Ok(i),
+    }
+}

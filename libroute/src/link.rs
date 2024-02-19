@@ -1,11 +1,9 @@
-use std::net::SocketAddr;
-
 use route_sys::{
     if_msghdr, RTM_DELADDR, RTM_DELMADDR, RTM_IFINFO, RTM_IFINFO2, RTM_NEWADDR, RTM_NEWMADDR,
     RTM_NEWMADDR2,
 };
 
-use crate::addresses::{parse_address, AddressFlags, AddressParseError};
+use crate::addresses::{parse_address, AddressFlags, AddressParseError, SockAddr};
 
 #[derive(Debug)]
 pub enum MessageType {
@@ -35,11 +33,13 @@ impl MessageType {
 
 #[derive(Debug)]
 pub struct LinkInfo {
-    pub destination: Option<SocketAddr>,
-    pub gateway: Option<SocketAddr>,
-    pub netmask: Option<SocketAddr>,
-    pub interface_addr: Option<SocketAddr>,
-    pub broadcast: Option<SocketAddr>,
+    pub destination: Option<SockAddr>,
+    pub gateway: Option<SockAddr>,
+    pub netmask: Option<SockAddr>,
+    pub genmask: Option<SockAddr>,
+    pub interface_addr: Option<SockAddr>,
+    pub interface_link: Option<SockAddr>,
+    pub broadcast: Option<SockAddr>,
     pub operation: MessageType,
     pub index: u32,
 }
@@ -66,7 +66,9 @@ impl LinkInfo {
             destination: None,
             gateway: None,
             netmask: None,
+            genmask: None,
             interface_addr: None,
+            interface_link: None,
             broadcast: None,
             operation: MessageType::from_raw(hdr.ifm_type.into()).unwrap(),
             index: hdr.ifm_index as u32,
@@ -103,14 +105,16 @@ impl LinkInfo {
 
         if addr_flags.has_genmask() {
             log::debug!("parsing genmask");
-            let (_, len) = parse_address(&addrs_data[offset..])?;
+            let (genmask, len) = parse_address(&addrs_data[offset..])?;
+            res.genmask = genmask;
             log::debug!("parsed {} bytes", len);
             offset += len;
         }
 
         if addr_flags.has_interface_link() {
             log::debug!("parsing link");
-            let (_, len) = parse_address(&addrs_data[offset..])?;
+            let (if_link, len) = parse_address(&addrs_data[offset..])?;
+            res.interface_link = if_link;
             log::debug!("parsed {} bytes", len);
             offset += len;
         }
@@ -132,7 +136,8 @@ impl LinkInfo {
 
         if addr_flags.has_brd() {
             log::debug!("parsing broadcast");
-            (res.broadcast, _) = parse_address(&addrs_data[offset..])?;
+            let (broadcast, _) = parse_address(&addrs_data[offset..])?;
+            res.broadcast = broadcast;
         }
 
         Ok(Some(res))
@@ -141,19 +146,23 @@ impl LinkInfo {
     pub fn print_self(&self) -> String {
         format!(
             "
-    operation:      {:?},
-    destination:    {:?},
-    gateway:        {:?},
-    netmask:        {:?},
-    broadcast:      {:?},
-    interface_addr: {:?},
+    operation:      {:?}
+    destination:    {:?}
+    gateway:        {:?}
+    netmask:        {:?}
+    genmask:        {:?}
+    broadcast:      {:?}
+    interface_addr: {:?}
+    interface_link: {:?}
 ",
             self.operation,
             self.destination,
             self.gateway,
             self.netmask,
+            self.genmask,
             self.broadcast,
             self.interface_addr,
+            self.interface_link,
         )
     }
 }

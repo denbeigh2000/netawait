@@ -30,10 +30,17 @@ impl Header {
 
         match hdr.rtm_type as u32 {
             RTM_ADD | RTM_DELETE | RTM_CHANGE | RTM_GET | RTM_GET2 => {
+                log::trace!("parsing route (type {}", hdr.rtm_type);
                 RouteInfo::from_raw(data).map(|opt| opt.map(Self::Route))
             }
-            RTM_IFINFO | RTM_IFINFO2 => LinkInfo::from_raw(data).map(|opt| opt.map(Self::Link)),
-            RTM_NEWADDR | RTM_DELADDR => AddressInfo::from_raw(data).map(|o| o.map(Self::Address)),
+            RTM_IFINFO | RTM_IFINFO2 => {
+                log::trace!("parsing link (type {}", hdr.rtm_type);
+                LinkInfo::from_raw(data).map(|opt| opt.map(Self::Link))
+            }
+            RTM_NEWADDR | RTM_DELADDR => {
+                log::trace!("parsing addr (type {}", hdr.rtm_type);
+                AddressInfo::from_raw(data).map(|o| o.map(Self::Address))
+            }
             _ => {
                 log::info!("dropping event of type {}", hdr.rtm_type);
                 Ok(None)
