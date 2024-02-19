@@ -2,7 +2,7 @@ use route_sys::{
     rt_metrics, rt_msghdr, RTF_GATEWAY, RTF_UP, RTM_ADD, RTM_CHANGE, RTM_DELETE, RTM_GET, RTM_GET2,
 };
 
-use crate::addresses::{parse_address, AddressFlags, AddressParseError, SockAddr};
+use crate::addresses::{AddressFlags, AddressParseError, AddressSet};
 
 #[derive(Clone, Debug)]
 /// Type of message from kernel
@@ -40,15 +40,10 @@ impl MessageType {
 pub struct RouteInfo {
     pub operation: MessageType,
     pub index: u32,
-    pub destination: Option<SockAddr>,
-    pub gateway: Option<SockAddr>,
-    pub netmask: Option<SockAddr>,
-    pub genmask: Option<SockAddr>,
-    pub broadcast: Option<SockAddr>,
-    pub interface_addr: Option<SockAddr>,
-    pub interface_link: Option<SockAddr>,
     pub flags: RoutingFlags, // parsed from rt_flags in rt_msghdr
     pub metrics: RouteMetrics,
+
+    pub addrs: AddressSet,
 }
 
 impl RouteInfo {
@@ -57,25 +52,16 @@ impl RouteInfo {
             "
     index:          {:?}
     operation:      {:?}
-    destination:    {:?}
-    gateway:        {:?}
-    netmask:        {:?}
-    genmask:        {:?}
-    broadcast:      {:?}
-    interface_addr: {:?}
-    interface_link: {:?}
+    flags:          {:?}
+    metrics:        {:?}
 
-    {self:?}
+    addrs:          {}
 ",
             self.index,
             self.operation,
-            self.destination,
-            self.gateway,
-            self.netmask,
-            self.genmask,
-            self.broadcast,
-            self.interface_addr,
-            self.interface_link,
+            self.flags,
+            self.metrics,
+            self.addrs.print_self(),
         )
     }
 
@@ -96,102 +82,18 @@ impl RouteInfo {
             _ => return Ok(None),
         };
 
-        // Get the flags
-        let flags = RoutingFlags::from_raw(hdr.rtm_flags);
-        // let interface_name = interface_index_to_name(hdr.rtm_index as u32);
-
-        // Initialize variable to store route data
-        let mut route_info = RouteInfo {
-            index: hdr.rtm_index as u32,
-            operation: op,
-            flags,
-            metrics: RouteMetrics::from_raw(&hdr.rtm_rmx),
-            destination: None,
-            gateway: None,
-            netmask: None,
-            genmask: None,
-            broadcast: None,
-            interface_addr: None,
-            interface_link: None,
-        };
-
         // Start of parsing sockaddr structures
         let addr_flags = AddressFlags::new(hdr.rtm_addrs as u32);
         let addrs_data = &data[std::mem::size_of::<rt_msghdr>()..];
-        let mut offset = 0;
-        // eprintln!("{}", addr_flags.print_self());
 
-        // Apparently the order of these will correpond to which are defined
-        // RTA_DST
-        // RTA_GATEWAY
-        // RTA_NETMASK
-        // RTA_GENMASK
-        // RTA_IFP
-        // RTA_IFA
-        // RTA_AUTHOR
-        // RTA_BRD
-        if addr_flags.has_destination() {
-            log::debug!("parsing destination");
-            let (dest, len) = parse_address(&addrs_data[offset..])?;
-            log::debug!("parsed {} bytes", len);
-            route_info.destination = dest;
-            offset += len;
-        }
-
-        if addr_flags.has_gateway() {
-            log::debug!("parsing gateway");
-            let (gw, len) = parse_address(&addrs_data[offset..])?;
-            log::debug!("parsed {} bytes", len);
-            route_info.gateway = gw;
-            offset += len;
-        }
-
-        if addr_flags.has_netmask() {
-            log::debug!("parsing netmask");
-            let (netmask, len) = parse_address(&addrs_data[offset..])?;
-            route_info.netmask = netmask;
-            log::debug!("parsed {} bytes", len);
-            offset += len;
-        }
-
-        if addr_flags.has_genmask() {
-            log::debug!("parsing genmask");
-            let (genmask, len) = parse_address(&addrs_data[offset..])?;
-            route_info.genmask = genmask;
-            log::debug!("parsed {} bytes", len);
-            offset += len;
-        }
-
-        if addr_flags.has_interface_link() {
-            log::debug!("parsing link");
-            let (if_link, len) = parse_address(&addrs_data[offset..])?;
-            route_info.interface_link = if_link;
-            log::debug!("parsed {} bytes", len);
-            offset += len;
-        }
-
-        if addr_flags.has_interface_address() {
-            log::debug!("parsing if address");
-            let (interface_addr, len) = parse_address(&addrs_data[offset..])?;
-            route_info.interface_addr = interface_addr;
-            log::debug!("parsed {} bytes", len);
-            offset += len;
-        }
-
-        if addr_flags.has_author() {
-            log::debug!("parsing author");
-            let (_, len) = parse_address(&addrs_data[offset..])?;
-            log::debug!("parsed {} bytes", len);
-            offset += len;
-        }
-
-        if addr_flags.has_brd() {
-            log::debug!("parsing broadcast");
-            let (broadcast, _) = parse_address(&addrs_data[offset..])?;
-            route_info.broadcast = broadcast;
-        }
-
-        Ok(Some(route_info))
+        // Initialize variable to store route data
+        Ok(Some(Self {
+            index: hdr.rtm_index as u32,
+            operation: op,
+            flags: RoutingFlags::from_raw(hdr.rtm_flags),
+            metrics: RouteMetrics::from_raw(&hdr.rtm_rmx),
+            addrs: AddressSet::from_raw(addrs_data, &addr_flags)?,
+        }))
     }
 }
 
@@ -203,6 +105,7 @@ impl RoutingFlags {
         Self(flags)
     }
 
+    // TODO: We may want to support more here?
     pub fn is_up(&self) -> bool {
         self.0 & (RTF_UP as i32) != 0
     }

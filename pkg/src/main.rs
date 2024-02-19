@@ -68,11 +68,11 @@ fn real_main() -> Result<(), ReadError> {
             _ => continue,
         }
 
-        if !(info.flags.is_up() && info.gateway.is_some()) {
+        if !(info.flags.is_up() && info.addrs.gateway.is_some()) {
             continue;
         }
 
-        match &info.destination {
+        match &info.addrs.destination {
             Some(SockAddr::V4(addr)) => {
                 if addr.ip().octets() != ZERO_IPV4.octets() {
                     continue;

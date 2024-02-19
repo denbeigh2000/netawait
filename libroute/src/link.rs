@@ -3,7 +3,7 @@ use route_sys::{
     RTM_NEWMADDR2,
 };
 
-use crate::addresses::{parse_address, AddressFlags, AddressParseError, SockAddr};
+use crate::addresses::{AddressFlags, AddressParseError, AddressSet};
 
 #[derive(Debug)]
 pub enum MessageType {
@@ -33,15 +33,9 @@ impl MessageType {
 
 #[derive(Debug)]
 pub struct LinkInfo {
-    pub destination: Option<SockAddr>,
-    pub gateway: Option<SockAddr>,
-    pub netmask: Option<SockAddr>,
-    pub genmask: Option<SockAddr>,
-    pub interface_addr: Option<SockAddr>,
-    pub interface_link: Option<SockAddr>,
-    pub broadcast: Option<SockAddr>,
     pub operation: MessageType,
     pub index: u32,
+    pub addrs: AddressSet,
 }
 
 impl LinkInfo {
@@ -51,118 +45,29 @@ impl LinkInfo {
 
         let struct_size = std::mem::size_of::<if_msghdr>();
         let data_len = data.len();
-        eprintln!("{struct_size}, {data_len}");
-        if struct_size > data_len {
-            log::warn!(
-                "skipping payload, struct size {} greater than data size {}",
-                struct_size,
-                data_len
-            );
-            return Ok(None);
-        }
-        // assert!(struct_size <= data_len);
-
-        let mut res = Self {
-            destination: None,
-            gateway: None,
-            netmask: None,
-            genmask: None,
-            interface_addr: None,
-            interface_link: None,
-            broadcast: None,
-            operation: MessageType::from_raw(hdr.ifm_type.into()).unwrap(),
-            index: hdr.ifm_index as u32,
-        };
+        assert!(struct_size <= data_len);
 
         // The source code says to see rtm_attrs for these, so..
         let addr_flags = AddressFlags::new(hdr.ifm_addrs as u32);
-        let mut offset = 0;
         let addrs_data = &data[struct_size..];
 
-        if addr_flags.has_destination() {
-            log::debug!("parsing destination");
-            let (dest, len) = parse_address(&addrs_data[offset..])?;
-            log::debug!("parsed {} bytes", len);
-            res.destination = dest;
-            offset += len;
-        }
-
-        if addr_flags.has_gateway() {
-            log::debug!("parsing gateway");
-            let (gw, len) = parse_address(&addrs_data[offset..])?;
-            log::debug!("parsed {} bytes", len);
-            res.gateway = gw;
-            offset += len;
-        }
-
-        if addr_flags.has_netmask() {
-            log::debug!("parsing netmask");
-            let (netmask, len) = parse_address(&addrs_data[offset..])?;
-            res.netmask = netmask;
-            log::debug!("parsed {} bytes", len);
-            offset += len;
-        }
-
-        if addr_flags.has_genmask() {
-            log::debug!("parsing genmask");
-            let (genmask, len) = parse_address(&addrs_data[offset..])?;
-            res.genmask = genmask;
-            log::debug!("parsed {} bytes", len);
-            offset += len;
-        }
-
-        if addr_flags.has_interface_link() {
-            log::debug!("parsing link");
-            let (if_link, len) = parse_address(&addrs_data[offset..])?;
-            res.interface_link = if_link;
-            log::debug!("parsed {} bytes", len);
-            offset += len;
-        }
-
-        if addr_flags.has_interface_address() {
-            log::debug!("parsing if address");
-            let (interface_addr, len) = parse_address(&addrs_data[offset..])?;
-            res.interface_addr = interface_addr;
-            log::debug!("parsed {} bytes", len);
-            offset += len;
-        }
-
-        if addr_flags.has_author() {
-            log::debug!("parsing author");
-            let (_, len) = parse_address(&addrs_data[offset..])?;
-            log::debug!("parsed {} bytes", len);
-            offset += len;
-        }
-
-        if addr_flags.has_brd() {
-            log::debug!("parsing broadcast");
-            let (broadcast, _) = parse_address(&addrs_data[offset..])?;
-            res.broadcast = broadcast;
-        }
-
-        Ok(Some(res))
+        Ok(Some(Self {
+            operation: MessageType::from_raw(hdr.ifm_type.into()).unwrap(),
+            index: hdr.ifm_index as u32,
+            addrs: AddressSet::from_raw(addrs_data, &addr_flags)?,
+        }))
     }
 
     pub fn print_self(&self) -> String {
         format!(
             "
     operation:      {:?}
-    destination:    {:?}
-    gateway:        {:?}
-    netmask:        {:?}
-    genmask:        {:?}
-    broadcast:      {:?}
-    interface_addr: {:?}
-    interface_link: {:?}
+    index:          {:?}
+    addrs:          {}
 ",
             self.operation,
-            self.destination,
-            self.gateway,
-            self.netmask,
-            self.genmask,
-            self.broadcast,
-            self.interface_addr,
-            self.interface_link,
+            self.index,
+            self.addrs.print_self(),
         )
     }
 }
