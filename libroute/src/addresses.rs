@@ -9,7 +9,7 @@ use route_sys::{
 };
 
 use std::mem;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 pub struct AddressFlags(u32);
 
@@ -74,11 +74,86 @@ impl AddressFlags {
     }
 }
 
+pub fn socketaddr_from_slice(data: &[u8]) -> Result<(SocketAddr, usize), AddressParseError> {
+    if data.is_empty() {
+        return Err(AddressParseError::DataEmpty);
+    }
+    // TODO: SAFETY: We're trusting that this truly is an accurate
+    // struct as passed from the kernel. this should probably be removed from
+    // the rest of the common parsing logic.
+    let sockaddr_in_ptr: *const sockaddr_in = data.as_ptr() as *const _;
+    let family = unsafe { (*sockaddr_in_ptr).sin_family as u32 };
+    // NOTE: we have to get this here, because otherwise we can't skip over
+    // unsupported chunks when parsing
+    let len = unsafe { (*sockaddr_in_ptr).sin_len as usize };
+    let res = match family {
+        AF_INET => {
+            log::debug!("IPV4 address");
+            let ptr: *const sockaddr_in = data.as_ptr() as *const _;
+            let v = <_ as NetStruct<_>>::from_raw(ptr)?;
+            SocketAddr::V4(v)
+        }
+        AF_INET6 => {
+            log::debug!("IPV6 address");
+            let ptr: *const sockaddr_in6 = data.as_ptr() as *const _;
+            let v = <_ as NetStruct<_>>::from_raw(ptr)?;
+            SocketAddr::V6(v)
+        }
+        _ => {
+            panic!("unsupported family for IPV4/V6 socketaddr: {family}");
+        }
+    };
+
+    Ok((res, len))
+}
+
 #[derive(Debug)]
 pub enum SockAddr {
     V4(SocketAddrV4),
     V6(SocketAddrV6),
     Link(DataLinkAddr),
+}
+
+impl SockAddr {
+    pub(crate) fn from_raw(data: &[u8]) -> Result<(Option<Self>, usize), AddressParseError> {
+        if data.is_empty() {
+            return Err(AddressParseError::DataEmpty);
+        }
+        // TODO: SAFETY: We're trusting that this truly is an accurate
+        // struct as passed from the kernel. this should probably be removed from
+        // the rest of the common parsing logic.
+        let sockaddr_in_ptr: *const sockaddr_in = data.as_ptr() as *const _;
+        let family = unsafe { (*sockaddr_in_ptr).sin_family as u32 };
+        // NOTE: we have to get this here, because otherwise we can't skip over
+        // unsupported chunks when parsing
+        let len = unsafe { (*sockaddr_in_ptr).sin_len as usize };
+        let res = match family {
+            AF_INET => {
+                log::debug!("IPV4 address");
+                let ptr: *const sockaddr_in = data.as_ptr() as *const _;
+                let v = <_ as NetStruct<_>>::from_raw(ptr)?;
+                Some(SockAddr::V4(v))
+            }
+            AF_INET6 => {
+                log::debug!("IPV6 address");
+                let ptr: *const sockaddr_in6 = data.as_ptr() as *const _;
+                let v = <_ as NetStruct<_>>::from_raw(ptr)?;
+                Some(SockAddr::V6(v))
+            }
+            AF_LINK => {
+                log::debug!("Data link(?) address");
+                let ptr: *const sockaddr_dl = data.as_ptr() as *const _;
+                let v = <_ as NetStruct<_>>::from_raw(ptr)?;
+                Some(SockAddr::Link(v))
+            }
+            _ => {
+                log::warn!("Unsupported family {}", family);
+                None
+            }
+        };
+
+        Ok((res, len))
+    }
 }
 
 #[derive(Debug)]
@@ -143,46 +218,101 @@ impl DataLinkAddr {
     }
 }
 
-unsafe fn read_sockaddr_in(data: &[u8]) -> Option<SockAddr> {
-    let sockaddr_in_ptr: *const sockaddr_in = data.as_ptr() as *const _;
-    let family = (*sockaddr_in_ptr).sin_family as u32;
-    match family {
-        AF_INET => {
-            log::debug!("IPV4 address");
-            let sockaddr_in_ptr: *const sockaddr_in = data.as_ptr() as *const _;
-            let sockaddr_in = *sockaddr_in_ptr;
+trait NetStruct<P>
+where
+    Self: Sized,
+{
+    const EXPECTED_FAMILY: u32;
+    fn family(ptr: *const P) -> u32;
+    fn len(ptr: *const P) -> usize;
 
-            let port = u16::from_be(sockaddr_in.sin_port);
-            let s_addr = u32::from_be(sockaddr_in.sin_addr.s_addr);
-            let addr = Ipv4Addr::from(s_addr.to_be_bytes());
-            let sockaddr = SocketAddrV4::new(addr, port);
-            Some(SockAddr::V4(sockaddr))
-        }
-        AF_INET6 => {
-            log::debug!("IPV6 address");
-            let sockaddr_in6_ptr: *const sockaddr_in6 = data.as_ptr() as *const _;
-            let sockaddr_in6 = *sockaddr_in6_ptr;
-            let port = u16::from_be((sockaddr_in6).sin6_port);
-            // TODO: This IPV6 struct is really weird - Confirm this is stable
-            // across different system versions.
-            let s6_addr = (sockaddr_in6).sin6_addr.__u6_addr.__u6_addr8;
-            let addr = Ipv6Addr::from(s6_addr);
+    fn from_raw(ptr: *const P) -> Result<Self, AddressParseError>;
 
-            let flowinfo = (sockaddr_in6).sin6_flowinfo;
-            let scope_id = (sockaddr_in6).sin6_scope_id;
-            let addr = SocketAddrV6::new(addr, port, flowinfo, scope_id);
-            Some(SockAddr::V6(addr))
+    fn from_slice(data: &[u8]) -> Result<Self, AddressParseError> {
+        if data.is_empty() {
+            return Err(AddressParseError::DataEmpty);
         }
-        AF_LINK => {
-            log::debug!("Data link(?) address");
-            let sockaddr_dl_ptr: *const sockaddr_dl = data.as_ptr() as *const _;
-            let addr = DataLinkAddr::from_raw(sockaddr_dl_ptr);
-            Some(SockAddr::Link(addr))
+
+        let ptr: *const P = data.as_ptr() as *const _;
+        if data.len() < Self::len(ptr) {
+            return Err(AddressParseError::PartialData);
         }
-        _ => {
-            log::warn!("Unsupported family {}", family);
-            None
+
+        let family = Self::family(ptr);
+        if family != Self::EXPECTED_FAMILY {
+            return Err(AddressParseError::WrongFamily(
+                Self::EXPECTED_FAMILY,
+                family,
+            ));
         }
+
+        Self::from_raw(ptr)
+    }
+}
+
+impl NetStruct<sockaddr_dl> for DataLinkAddr {
+    const EXPECTED_FAMILY: u32 = AF_LINK;
+
+    fn family(ptr: *const sockaddr_dl) -> u32 {
+        unsafe { (*ptr).sdl_family }.into()
+    }
+
+    fn len(ptr: *const sockaddr_dl) -> usize {
+        unsafe { (*ptr).sdl_len }.into()
+    }
+
+    fn from_raw(ptr: *const sockaddr_dl) -> Result<Self, AddressParseError> {
+        Ok(unsafe { DataLinkAddr::from_raw(ptr) })
+    }
+}
+
+impl NetStruct<sockaddr_in> for SocketAddrV4 {
+    const EXPECTED_FAMILY: u32 = AF_INET;
+
+    fn family(ptr: *const sockaddr_in) -> u32 {
+        unsafe { (*ptr).sin_family as u32 }
+    }
+
+    fn len(ptr: *const sockaddr_in) -> usize {
+        unsafe { (*ptr).sin_len as usize }
+    }
+
+    fn from_raw(ptr: *const sockaddr_in) -> Result<Self, AddressParseError> {
+        let raw_addr = unsafe { *ptr };
+
+        let port = u16::from_be(raw_addr.sin_port);
+        let s_addr = u32::from_be(raw_addr.sin_addr.s_addr);
+        Ok(SocketAddrV4::new(
+            Ipv4Addr::from(s_addr.to_be_bytes()),
+            port,
+        ))
+    }
+}
+
+impl NetStruct<sockaddr_in6> for SocketAddrV6 {
+    const EXPECTED_FAMILY: u32 = AF_INET6;
+
+    fn family(ptr: *const sockaddr_in6) -> u32 {
+        unsafe { (*ptr).sin6_family as u32 }
+    }
+
+    fn len(ptr: *const sockaddr_in6) -> usize {
+        unsafe { (*ptr).sin6_len as usize }
+    }
+
+    fn from_raw(ptr: *const sockaddr_in6) -> Result<Self, AddressParseError> {
+        let raw_addr = unsafe { *ptr };
+        let port = u16::from_be((raw_addr).sin6_port);
+        // SAFETY: This is a union of: [u8; 16], [u16; 8], [u32; 4]
+        // which are all different ways to represent the same data
+        // (a 128-bit IP address). In this case, we just take the
+        // underlying data and cast it as a [u8; 16]
+        let raw_ip_bytes: [u8; 16] = unsafe { mem::transmute(raw_addr.sin6_addr) };
+        let addr = Ipv6Addr::from(raw_ip_bytes);
+
+        let flowinfo = raw_addr.sin6_flowinfo;
+        let scope_id = raw_addr.sin6_scope_id;
+        Ok(SocketAddrV6::new(addr, port, flowinfo, scope_id))
     }
 }
 
@@ -192,9 +322,11 @@ pub enum AddressParseError {
     DataEmpty,
     #[error("data given is larger than slice given")]
     PartialData,
+    #[error("wrong family (expected {0}, got {1})")]
+    WrongFamily(u32, u32),
 }
 
-pub fn parse_address(data: &[u8]) -> Result<(Option<SockAddr>, usize), AddressParseError> {
+pub(crate) fn parse_address(data: &[u8]) -> Result<(Option<SockAddr>, usize), AddressParseError> {
     if data.is_empty() {
         return Err(AddressParseError::DataEmpty);
     }
@@ -216,36 +348,11 @@ pub fn parse_address(data: &[u8]) -> Result<(Option<SockAddr>, usize), AddressPa
         return Err(AddressParseError::PartialData);
     }
 
-    let sa_data = &data[..sa_len];
-    let res = unsafe { read_sockaddr_in(sa_data) };
+    // TODO: SAFETY: We're trusting that this truly is an accurate
+    // struct as passed from the kernel. this should probably be removed from
+    // the rest of the common parsing logic.
+    let (res, _) = SockAddr::from_raw(&data[..sa_len]).unwrap();
     Ok((res, sa_len))
-}
-
-pub fn parse_addresses(data: &[u8]) -> Vec<SockAddr> {
-    let mut offset = 0;
-    let mut addrs = Vec::new();
-    while offset < data.len() {
-        let sa_len = data[offset] as usize;
-
-        // Make sure the buffer has enough data left:
-        if sa_len > data.len() - offset {
-            log::warn!(
-                "received partial address? length was {}, buf size was {}",
-                sa_len,
-                data.len()
-            );
-            break;
-        }
-
-        let sa_data = &data[offset..offset + sa_len];
-        if let Some(socket_addr) = unsafe { read_sockaddr_in(sa_data) } {
-            addrs.push(socket_addr)
-        }
-
-        offset += sa_len;
-    }
-
-    addrs
 }
 
 #[derive(Debug)]
@@ -461,16 +568,18 @@ impl AddressSet {
 
         if flags.has_interface_link() {
             log::debug!("parsing link");
-            let (if_link, len) = parse_address(&data[offset..])?;
-            info.interface_link = if_link;
+            let ptr = (data[offset..]).as_ptr() as *const _;
+            let if_link = <_ as NetStruct<_>>::from_raw(ptr)?;
+            let len = <DataLinkAddr as NetStruct<_>>::len(ptr);
+            info.interface_link = Some(if_link);
             log::debug!("parsed {} bytes", len);
             offset += len;
         }
 
         if flags.has_interface_address() {
             log::debug!("parsing if address");
-            let (interface_addr, len) = parse_address(&data[offset..])?;
-            info.interface_addr = interface_addr;
+            let (interface_addr, len) = socketaddr_from_slice(&data[offset..])?;
+            info.interface_addr = Some(interface_addr);
             log::debug!("parsed {} bytes", len);
             offset += len;
         }

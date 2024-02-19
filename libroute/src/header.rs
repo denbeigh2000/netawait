@@ -31,22 +31,25 @@ impl Header {
         }
     }
 
-    pub fn from_raw(data: &[u8]) -> Result<Option<Self>, AddressParseError> {
+    pub(crate) fn from_raw(data: &[u8]) -> Result<Option<Self>, AddressParseError> {
         // Get the header
         let hdr_ptr: *const rt_msghdr = data.as_ptr() as *const _;
+        // SAFETY: we depend on this being a byte slice received directly
+        // from the kernel. The privacy of this function should allow us to
+        // ensure this.
         let hdr = unsafe { *hdr_ptr };
 
         match hdr.rtm_type as u32 {
             RTM_ADD | RTM_DELETE | RTM_CHANGE | RTM_GET | RTM_GET2 => {
-                log::trace!("parsing route (type {}", hdr.rtm_type);
+                log::trace!("parsing route (type {})", hdr.rtm_type);
                 RouteInfo::from_raw(data).map(|opt| opt.map(Self::Route))
             }
             RTM_IFINFO | RTM_IFINFO2 => {
-                log::trace!("parsing link (type {}", hdr.rtm_type);
+                log::trace!("parsing link (type {})", hdr.rtm_type);
                 LinkInfo::from_raw(data).map(|opt| opt.map(Self::Link))
             }
             RTM_NEWADDR | RTM_DELADDR => {
-                log::trace!("parsing addr (type {}", hdr.rtm_type);
+                log::trace!("parsing addr (type {})", hdr.rtm_type);
                 AddressInfo::from_raw(data).map(|o| o.map(Self::Address))
             }
             _ => {

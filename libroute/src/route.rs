@@ -65,10 +65,12 @@ impl RouteInfo {
         )
     }
 
-    pub fn from_raw(data: &[u8]) -> Result<Option<Self>, AddressParseError> {
+    pub(crate) fn from_raw(data: &[u8]) -> Result<Option<Self>, AddressParseError> {
         log::debug!("parsing a message of length {}", data.len());
-        // Get the header
         let hdr_ptr: *const rt_msghdr = data.as_ptr() as *const _;
+        // SAFETY: We depend on this being a byte slice received directly from
+        // the kernel. The privacy of this function should be enough to
+        // confirm this.
         let hdr = unsafe { *hdr_ptr };
 
         // Validate the message type

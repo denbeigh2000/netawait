@@ -69,25 +69,8 @@ impl RouteSocket {
         Ok(Self { buf, inner, lock })
     }
 
-    pub fn request_default_ipv4(&mut self, interface_name: Option<&str>) -> io::Result<()> {
-        let rtm_index = match interface_name {
-            None => 0,
-            Some(if_name) => {
-                // Get the index of the interface
-                let ifname_c = CString::new(if_name).unwrap();
-                let ifindex = unsafe { if_nametoindex(ifname_c.as_ptr()) };
-                if ifindex == 0 {
-                    // If if_nametoindex returns 0, it failed to find the interface
-                    let err = std::io::Error::last_os_error();
-                    log::warn!("error looking up interface index: {err}");
-
-                    // It's important that we don't throw here, so that we can
-                    // suport use cases where a network card is added later
-                }
-
-                ifindex as u16
-            }
-        };
+    pub fn request_default_ipv4(&mut self, interface_index: Option<u16>) -> io::Result<()> {
+        let rtm_index = interface_index.unwrap_or(0);
 
         let raw_addr_4 = in_addr { s_addr: 0 };
         let request = route_request {
@@ -133,6 +116,8 @@ impl RouteSocket {
                 sin_zero: [0; 8],
             },
         };
+
+        log::trace!("req: {:?}", request);
         let request_bytes: &[u8] = unsafe {
             let req_ptr = (&request) as *const _ as *const u8;
             std::slice::from_raw_parts(req_ptr, std::mem::size_of::<route_request>())
