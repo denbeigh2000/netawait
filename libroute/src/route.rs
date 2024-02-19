@@ -39,6 +39,7 @@ impl MessageType {
 #[derive(Debug)]
 pub struct RouteInfo {
     pub operation: MessageType,
+    pub index: u32,
     pub destination: Option<SockAddr>,
     pub gateway: Option<SockAddr>,
     pub netmask: Option<SockAddr>,
@@ -54,6 +55,7 @@ impl RouteInfo {
     pub fn print_self(&self) -> String {
         format!(
             "
+    index:          {:?}
     operation:      {:?}
     destination:    {:?}
     gateway:        {:?}
@@ -65,6 +67,7 @@ impl RouteInfo {
 
     {self:?}
 ",
+            self.index,
             self.operation,
             self.destination,
             self.gateway,
@@ -99,6 +102,7 @@ impl RouteInfo {
 
         // Initialize variable to store route data
         let mut route_info = RouteInfo {
+            index: hdr.rtm_index as u32,
             operation: op,
             flags,
             metrics: RouteMetrics::from_raw(&hdr.rtm_rmx),

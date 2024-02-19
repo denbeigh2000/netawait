@@ -15,6 +15,14 @@ pub enum Header {
 }
 
 impl Header {
+    pub fn index(&self) -> u32 {
+        match self {
+            Self::Route(r) => r.index,
+            Self::Link(l) => l.index,
+            Self::Address(a) => a.index,
+        }
+    }
+
     pub fn print_self(&self) -> String {
         match self {
             Self::Route(r) => r.print_self(),

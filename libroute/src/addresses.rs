@@ -83,11 +83,11 @@ pub enum SockAddr {
 
 #[derive(Debug)]
 pub struct DataLinkAddr {
-    index: u16,
+    pub index: u16,
     // Leaving the gigantic enum of this out for now
-    // interface_type: InterfaceType,
-    link_layer_addr: Vec<u8>,
-    interface_name: String,
+    // pub interface_type: InterfaceType,
+    pub link_layer_addr: Vec<u8>,
+    pub interface_name: String,
     // Discarding link layer selector
 }
 
