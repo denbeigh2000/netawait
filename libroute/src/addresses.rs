@@ -127,6 +127,7 @@ impl SockAddr {
         // NOTE: we have to get this here, because otherwise we can't skip over
         // unsupported chunks when parsing
         let len = unsafe { (*sockaddr_in_ptr).sin_len as usize };
+        log::trace!("len: {len}, data: {:?}", data);
         let res = match family {
             AF_INET => {
                 log::debug!("IPV4 address");
@@ -186,16 +187,12 @@ impl DataLinkAddr {
         // expected to be a C string.
         let data: [u8; 12] = mem::transmute(addr.sdl_data);
 
-        log::trace!("nlen: {}, alen: {}", addr.sdl_nlen, addr.sdl_alen);
-
         let ll_addr_start = addr.sdl_nlen as usize;
         let ll_addr_end = ll_addr_start + addr.sdl_alen as usize;
         let link_layer_bytes = &data[ll_addr_start..ll_addr_end];
         let link_layer_addr = Vec::from(link_layer_bytes);
         let name_slice = &data[..addr.sdl_nlen as usize];
-        log::trace!("name slice: {:?}", name_slice);
         let interface_name = String::from_utf8_lossy(name_slice).to_string().clone();
-        log::trace!("index: {:?}, if name: {:?}", index, interface_name);
 
         DataLinkAddr {
             index,
@@ -328,15 +325,14 @@ pub enum AddressParseError {
 
 pub(crate) fn parse_address(data: &[u8]) -> Result<(Option<SockAddr>, usize), AddressParseError> {
     if data.is_empty() {
-        return Err(AddressParseError::DataEmpty);
+        // TODO: our flag processing might be wonky?
+        return Ok((None, 0));
+        // return Err(AddressParseError::DataEmpty);
     }
 
     let sa_len = data[0] as usize;
-    log::debug!(
-        "parsing address of size {} (slice size {})",
-        sa_len,
-        data.len()
-    );
+
+    log::trace!("len: {sa_len}");
 
     if sa_len == 0 {
         log::warn!("sa_len was 0, trying to read empty address?");
@@ -535,64 +531,55 @@ impl AddressSet {
         // RTA_AUTHOR
         // RTA_BRD
         if flags.has_destination() {
-            log::debug!("parsing destination");
+            log::trace!("parsing dest, offset {offset}");
             let (dest, len) = parse_address(&data[offset..])?;
-            log::debug!("parsed {} bytes", len);
             info.destination = dest;
             offset += len;
         }
 
         if flags.has_gateway() {
-            log::debug!("parsing gateway");
+            log::trace!("parsing gw, offset {offset}");
             let (gw, len) = parse_address(&data[offset..])?;
-            log::debug!("parsed {} bytes", len);
             info.gateway = gw;
             offset += len;
         }
 
         if flags.has_netmask() {
-            log::debug!("parsing netmask");
+            log::trace!("parsing netmask, offset {offset}");
             let (netmask, len) = parse_address(&data[offset..])?;
             info.netmask = netmask;
-            log::debug!("parsed {} bytes", len);
             offset += len;
         }
 
         if flags.has_genmask() {
-            log::debug!("parsing genmask");
+            log::trace!("parsing genmask, offset {offset}");
             let (genmask, len) = parse_address(&data[offset..])?;
             info.genmask = genmask;
-            log::debug!("parsed {} bytes", len);
             offset += len;
         }
 
         if flags.has_interface_link() {
-            log::debug!("parsing link");
-            let ptr = (data[offset..]).as_ptr() as *const _;
-            let if_link = <_ as NetStruct<_>>::from_raw(ptr)?;
-            let len = <DataLinkAddr as NetStruct<_>>::len(ptr);
-            info.interface_link = Some(if_link);
-            log::debug!("parsed {} bytes", len);
+            log::trace!("parsing link, offset {offset}");
+            let (if_link, len) = parse_address(&data[offset..])?;
+            info.interface_link = if_link;
             offset += len;
         }
 
         if flags.has_interface_address() {
-            log::debug!("parsing if address");
-            let (interface_addr, len) = socketaddr_from_slice(&data[offset..])?;
-            info.interface_addr = Some(interface_addr);
-            log::debug!("parsed {} bytes", len);
+            log::trace!("parsing addr, offset {offset}");
+            let (interface_addr, len) = parse_address(&data[offset..])?;
+            info.interface_addr = interface_addr;
             offset += len;
         }
 
         if flags.has_author() {
-            log::debug!("parsing author");
+            log::trace!("parsing auth, offset {offset}");
             let (_, len) = parse_address(&data[offset..])?;
-            log::debug!("parsed {} bytes", len);
             offset += len;
         }
 
         if flags.has_brd() {
-            log::debug!("parsing broadcast");
+            log::trace!("parsing brd, offset {offset}");
             let (broadcast, _) = parse_address(&data[offset..])?;
             info.broadcast = broadcast;
         }
@@ -636,6 +623,7 @@ impl AddressInfo {
     is broadcast: {}
     is ifref: {}
     is router: {}
+    {:?}
 ",
             self.operation,
             self.index,
@@ -648,12 +636,11 @@ impl AddressInfo {
             self.flags.is_broadcast(),
             self.flags.is_ifref(),
             self.flags.is_router(),
+            self,
         )
     }
 
     pub fn from_raw(data: &[u8]) -> Result<Option<Self>, AddressParseError> {
-        log::debug!("parsing an address message of length {}", data.len());
-
         // Get the header
         let hdr_ptr: *const ifa_msghdr = data.as_ptr() as *const _;
         let hdr = unsafe { *hdr_ptr };

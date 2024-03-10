@@ -3,7 +3,7 @@ use route_sys::{
     RTM_GET2, RTM_IFINFO, RTM_IFINFO2, RTM_NEWADDR,
 };
 
-use crate::addresses::{AddressInfo, AddressParseError};
+use crate::addresses::{AddressInfo, AddressParseError, AddressSet};
 use crate::link::LinkInfo;
 use crate::route::RouteInfo;
 
@@ -23,6 +23,14 @@ impl Header {
         }
     }
 
+    pub fn addrs(&self) -> &AddressSet {
+        match self {
+            Self::Route(r) => &r.addrs,
+            Self::Link(l) => &l.addrs,
+            Self::Address(a) => &a.addrs,
+        }
+    }
+
     pub fn print_self(&self) -> String {
         match self {
             Self::Route(r) => r.print_self(),
@@ -39,6 +47,9 @@ impl Header {
         // ensure this.
         let hdr = unsafe { *hdr_ptr };
 
+        let seq = hdr.rtm_seq;
+        let pid = hdr.rtm_pid;
+        log::trace!("seq: {seq}, pid: {pid}");
         match hdr.rtm_type as u32 {
             RTM_ADD | RTM_DELETE | RTM_CHANGE | RTM_GET | RTM_GET2 => {
                 log::trace!("parsing route (type {})", hdr.rtm_type);
