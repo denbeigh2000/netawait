@@ -73,6 +73,9 @@ impl Header {
 
 pub fn interface_index_to_name(idx: u32) -> Option<String> {
     let mut ifname = [0u8; IFNAMSIZ as usize]; // IFNAMSIZ is the length for an interface name
+
+    // I don't understand why the `nix` crate has `if_nametoindex`
+    // but not if_indextoname
     let interface_name_cstr = unsafe {
         let ptr = ifname.as_mut_ptr() as *mut i8;
         if if_indextoname(idx, ptr).is_null() {

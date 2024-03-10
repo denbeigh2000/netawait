@@ -9,7 +9,7 @@ use route_sys::{
 };
 
 use std::mem;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
 pub struct AddressFlags(u32);
 
@@ -72,39 +72,6 @@ impl AddressFlags {
             self.has_brd()
         )
     }
-}
-
-pub fn socketaddr_from_slice(data: &[u8]) -> Result<(SocketAddr, usize), AddressParseError> {
-    if data.is_empty() {
-        return Err(AddressParseError::DataEmpty);
-    }
-    // TODO: SAFETY: We're trusting that this truly is an accurate
-    // struct as passed from the kernel. this should probably be removed from
-    // the rest of the common parsing logic.
-    let sockaddr_in_ptr: *const sockaddr_in = data.as_ptr() as *const _;
-    let family = unsafe { (*sockaddr_in_ptr).sin_family as u32 };
-    // NOTE: we have to get this here, because otherwise we can't skip over
-    // unsupported chunks when parsing
-    let len = unsafe { (*sockaddr_in_ptr).sin_len as usize };
-    let res = match family {
-        AF_INET => {
-            log::debug!("IPV4 address");
-            let ptr: *const sockaddr_in = data.as_ptr() as *const _;
-            let v = <_ as NetStruct<_>>::from_raw(ptr)?;
-            SocketAddr::V4(v)
-        }
-        AF_INET6 => {
-            log::debug!("IPV6 address");
-            let ptr: *const sockaddr_in6 = data.as_ptr() as *const _;
-            let v = <_ as NetStruct<_>>::from_raw(ptr)?;
-            SocketAddr::V6(v)
-        }
-        _ => {
-            panic!("unsupported family for IPV4/V6 socketaddr: {family}");
-        }
-    };
-
-    Ok((res, len))
 }
 
 #[derive(Debug)]

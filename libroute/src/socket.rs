@@ -1,16 +1,16 @@
 use crate::addresses::AddressParseError;
 use crate::header::Header;
 use route_sys::{
-    if_nametoindex, in_addr, route_request, rt_metrics, rt_msghdr, setsockopt, sockaddr_dl,
-    sockaddr_in, socket as raw_socket, socklen_t, timeval, AF_INET, PF_ROUTE, RTA_DST, RTA_IFA,
-    RTA_IFP, RTA_NETMASK, RTF_GATEWAY, RTF_HOST, RTF_IFSCOPE, RTF_UP, RTM_GET, RTM_VERSION,
-    RTV_HOPCOUNT, SOCK_RAW, SOL_SOCKET, SO_RCVTIMEO,
+    in_addr, route_request, rt_metrics, rt_msghdr, sockaddr_dl, sockaddr_in, AF_INET, RTA_DST,
+    RTA_IFA, RTA_IFP, RTA_NETMASK, RTF_GATEWAY, RTF_HOST, RTF_IFSCOPE, RTF_UP, RTM_GET,
+    RTM_VERSION, RTV_HOPCOUNT,
 };
 
-use std::ffi::{c_void, CString};
+use nix::net::if_::if_nametoindex;
+use nix::sys::socket::{self as nix_socket, AddressFamily, SockFlag, SockType};
+
 use std::io::{self, Read, Write};
 use std::mem::size_of;
-use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
 #[derive(thiserror::Error, Debug)]
@@ -40,33 +40,16 @@ pub struct RouteSocket {
 }
 
 impl RouteSocket {
-    pub fn new(timeout: Option<i64>) -> io::Result<Self> {
-        let s = unsafe { raw_socket(PF_ROUTE as i32, SOCK_RAW as i32, 0) };
-        if s < 0 {
-            let err = io::Error::last_os_error();
-            return Err(err);
-        };
+    pub fn new(_timeout: Option<i64>) -> io::Result<Self> {
+        let s = nix_socket::socket(AddressFamily::Route, SockType::Raw, SockFlag::empty(), None)?;
 
-        if let Some(t) = timeout {
-            let tv = timeval {
-                tv_sec: t,
-                tv_usec: 0,
-            };
-
-            let tv_ptr = &tv as *const _ as *const c_void;
-            let tv_size = size_of::<timeval>() as socklen_t;
-            let ret =
-                unsafe { setsockopt(s, SOL_SOCKET as i32, SO_RCVTIMEO as i32, tv_ptr, tv_size) };
-            if ret != 0 {
-                let err = io::Error::last_os_error();
-                return Err(err);
-            }
-        }
+        // TODO: The setsockopt approach doesn't do what we want, because we're
+        // setting a timeout between events, not on how long the socket stays
+        // open.
 
         let buf = [0u8; 2048];
         let seq = 0;
-        let fd = unsafe { OwnedFd::from_raw_fd(s) };
-        let inner = fd.into();
+        let inner = s.into();
         Ok(Self { buf, inner, seq })
     }
 
@@ -126,46 +109,6 @@ impl RouteSocket {
         self.send(request_bytes)?;
         Ok(())
     }
-
-    // pub fn dump_route_table(&mut self) -> io::Result<()> {
-    //     const HDR_LEN: usize = size_of::<rt_msghdr>();
-    //     let hdr = rt_msghdr {
-    //         rtm_msglen: HDR_LEN as u16,
-    //         rtm_version: RTM_VERSION as u8,
-    //         rtm_type: RTM_GET as u8,
-    //         rtm_index: 0,
-    //         rtm_flags: 0,
-    //         rtm_addrs: RTA_IFP as i32,
-    //         rtm_pid: 0,
-    //         rtm_seq: self.get_seq(),
-    //         rtm_errno: 0,
-    //         rtm_use: 0,
-    //         rtm_inits: 0,
-    //         rtm_rmx: rt_metrics {
-    //             rmx_expire: 0,
-    //             rmx_locks: 0,
-    //             rmx_mtu: 0,
-    //             rmx_hopcount: 0,
-    //             rmx_recvpipe: 0,
-    //             rmx_sendpipe: 0,
-    //             rmx_ssthresh: 0,
-    //             rmx_rtt: 0,
-    //             rmx_rttvar: 0,
-    //             rmx_pksent: 0,
-    //             rmx_state: 0,
-    //             rmx_filler: [0u32; 3],
-    //         },
-    //     };
-
-    //     let hdr_slice = unsafe {
-    //         let hdr_ptr = (&hdr) as *const _ as *const u8;
-    //         std::slice::from_raw_parts(hdr_ptr, HDR_LEN)
-    //     };
-
-    //     log::debug!("sending rt dump");
-    //     self.send(hdr_slice)?;
-    //     Ok(())
-    // }
 
     pub fn request_interface_info(&mut self, if_idx: u16) -> io::Result<()> {
         const ADDR_LEN: usize = size_of::<sockaddr_dl>();
@@ -284,9 +227,6 @@ impl RouteSocket {
 }
 
 pub fn get_ifindex(ifname: &str) -> Result<u32, io::Error> {
-    let c_ifname = CString::new(ifname)?;
-    match unsafe { if_nametoindex(c_ifname.as_ptr()) } {
-        0 => Err(io::Error::last_os_error()),
-        i => Ok(i),
-    }
+    let res = if_nametoindex(ifname)?;
+    Ok(res)
 }
