@@ -1,3 +1,4 @@
+use flags::Args;
 use libroute::addresses::{AddressOperation, SockAddr};
 use libroute::header::Header;
 use libroute::link::MessageType as LinkMessageType;
@@ -8,6 +9,8 @@ use clap::Parser;
 use ipnetwork::{Ipv4Network, Ipv6Network};
 
 use std::net::{Ipv4Addr, Ipv6Addr};
+
+use crate::flags::WaitConditionFlag;
 
 lazy_static::lazy_static! {
     static ref ZERO_IPV4: Ipv4Addr = Ipv4Addr::from([0, 0, 0, 0]);
@@ -24,16 +27,7 @@ lazy_static::lazy_static! {
     static ref LINK_LOCAL_IPV6_RANGE: Ipv6Network = Ipv6Network::new(Ipv6Addr::from([65152, 0, 0, 0, 0, 0, 0, 0]), 10).unwrap();
 }
 
-#[derive(Parser)]
-struct Args {
-    /// If specified, waits for a default route to be up on this interface
-    #[arg(short, long)]
-    interface: Option<String>,
-    /// If specified, wait this many seconds before a default network is
-    /// available
-    #[arg(short, long)]
-    timeout_secs: Option<i64>,
-}
+mod flags;
 
 #[derive(Clone, Debug)]
 enum InterfaceSpec {
@@ -48,6 +42,20 @@ enum WaitCondition {
     Interface(InterfaceSpec),
 }
 
+fn to_ifspec(if_name: &str) -> InterfaceSpec {
+    match get_ifindex(if_name) {
+        Ok(v) => {
+            log::info!("found index {v} for interface {if_name}");
+            InterfaceSpec::Index(v as u16)
+        }
+        Err(e) => {
+            log::warn!("Fetching index for {if_name} failed: {e}, tracking new connections");
+            assert!(!if_name.is_empty());
+            InterfaceSpec::Name(if_name.to_string())
+        }
+    }
+}
+
 fn real_main() -> Result<(), ReadError> {
     env_logger::init();
 
@@ -60,28 +68,26 @@ fn real_main() -> Result<(), ReadError> {
 
     // NOTE: mut so we can eventually change this to an Index when we find one
     // that we want
-    let mut wait_cond = match args.interface {
-        None => {
-            rs.request_default_ipv4().unwrap();
-            WaitCondition::AnyDefaultRoute
+    let mut wait_cond = match args.wait_condition {
+        WaitConditionFlag::DefaultRouteExists => WaitCondition::AnyDefaultRoute,
+        // TODO: need to properly implement these
+        WaitConditionFlag::InterfaceHasRoute(if_name) => {
+            WaitCondition::Interface(to_ifspec(&if_name))
         }
-        Some(ref if_name) => WaitCondition::Interface({
-            match get_ifindex(if_name) {
-                Ok(v) => {
-                    log::info!("found index {v} for interface {if_name}");
-                    rs.request_interface_info(v as u16).unwrap();
-                    InterfaceSpec::Index(v as u16)
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Fetching index for {if_name} failed: {e}, tracking new connections"
-                    );
-                    assert!(!if_name.is_empty());
-                    InterfaceSpec::Name(if_name.to_string())
-                }
-            }
-        }),
+        WaitConditionFlag::InterfaceHasAddress(if_name) => {
+            WaitCondition::Interface(to_ifspec(&if_name))
+        }
     };
+
+    match wait_cond {
+        WaitCondition::AnyDefaultRoute => rs.request_default_ipv4().unwrap(),
+        WaitCondition::Interface(InterfaceSpec::Index(idx)) => {
+            rs.request_interface_info(idx).unwrap()
+        }
+        WaitCondition::Interface(InterfaceSpec::Name(ref if_name)) => {
+            log::debug!("No interface index found for {if_name}")
+        }
+    }
 
     log::debug!("wait_cond: {:?}", wait_cond);
 
@@ -111,44 +117,6 @@ fn real_main() -> Result<(), ReadError> {
                 }
             }
         };
-
-        // match interface {
-        //     InterfaceSpec::Any => {
-        //         log::info!("finishing, we haven't specified an interface");
-        //     }
-        //     InterfaceSpec::Index(ref idx) => {
-        //         // NOTE: this will give us the interface associated with the
-        //         // routing table, but that's not really want we want here.
-        //         // we want to wait for either:
-        //         // - any interface to become available (a default route is created)
-        //         // - an interface to come up (marked with IFF_RUNNING)
-        //         // let new_idx = match packet.index() {
-        //         //     0 => info
-        //         //         .addrs
-        //         //         .interface_link
-        //         //         .as_ref()
-        //         //         .map(|l| l.index as u32)
-        //         //         .unwrap_or(0),
-        //         //     i => i,
-        //         // };
-
-        //         if new_idx == 0 {
-        //             log::warn!("skipping index 0 case for now (this is purely a routing table update, and needs a second lookup?)");
-        //         } else if *idx as u32 != new_idx {
-        //             log::info!("skipping: saw {new_idx}, waiting for {idx}");
-        //             continue;
-        //         } else {
-        //             log::info!("finishing, we've seen index {idx}");
-        //         }
-        //     }
-        //     InterfaceSpec::Name(ref name_str) => {
-        //         // Because we've been watching for new interfaces matching
-        //         // this name, we know this route doesn't match the interface
-        //         // we're waiting for.
-        //         log::info!("Skipping, still haven't seen if {name_str}");
-        //         continue;
-        //     }
-        // }
     }
 }
 
