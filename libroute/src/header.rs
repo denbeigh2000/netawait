@@ -47,10 +47,18 @@ impl Header {
         // ensure this.
         let hdr = unsafe { *hdr_ptr };
 
+        let sz = hdr.rtm_msglen as usize;
+        let n = data.len();
+        log::trace!("size={sz}, data.len()={n}");
+        if sz != n {
+            panic!("partial data read: size={sz}, data.len()={n}");
+        }
+
         let seq = hdr.rtm_seq;
         let pid = hdr.rtm_pid;
-        log::trace!("seq: {seq}, pid: {pid}");
-        match hdr.rtm_type as u32 {
+        let hdr_type = hdr.rtm_type;
+        log::trace!("type: {hdr_type}, seq: {seq}, pid: {pid}");
+        match hdr_type as u32 {
             RTM_ADD | RTM_DELETE | RTM_CHANGE | RTM_GET | RTM_GET2 => {
                 log::trace!("parsing route (type {})", hdr.rtm_type);
                 RouteInfo::from_raw(data).map(|opt| opt.map(Self::Route))

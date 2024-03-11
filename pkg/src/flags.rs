@@ -13,14 +13,9 @@ lazy_static! {
 
 #[derive(Parser)]
 pub struct Args {
-    /// If specified, waits for a default route to be up on this interface
+    /// If specified, waits for this interface to be up AND assigned a route OR address.
     #[arg(short, long)]
-    // pub interface: Option<String>,
     pub wait_condition: WaitConditionFlag,
-    /// If specified, wait this many seconds before a default network is
-    /// available
-    #[arg(short, long)]
-    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Clone)]

@@ -52,7 +52,7 @@ impl RouteInfo {
             "
     index:          {:?}
     operation:      {:?}
-    flags:          {:?}
+    flags:          {}
     metrics:        {:?}
 
     addrs:          {}
@@ -86,7 +86,10 @@ impl RouteInfo {
 
         // Start of parsing sockaddr structures
         let addr_flags = AddressFlags::new(hdr.rtm_addrs as u32);
+        log::trace!("op: {op:?}, addr_flags: {}", addr_flags);
         let addrs_data = &data[std::mem::size_of::<rt_msghdr>()..];
+        log::trace!("sizeof: {:?}", std::mem::size_of::<rt_msghdr>());
+        log::trace!("addrs_data: {:?}", addrs_data);
 
         // Initialize variable to store route data
         Ok(Some(Self {
@@ -101,6 +104,12 @@ impl RouteInfo {
 
 #[derive(Debug)]
 pub struct RoutingFlags(i32);
+
+impl std::fmt::Display for RoutingFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RoutingFlags({:02b})", self.0)
+    }
+}
 
 impl RoutingFlags {
     pub fn from_raw(flags: i32) -> Self {

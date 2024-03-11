@@ -1,15 +1,15 @@
 use route_sys::{
-    ifa_msghdr, sockaddr_dl, sockaddr_in, sockaddr_in6, AF_INET, AF_INET6, AF_LINK, RTA_AUTHOR,
-    RTA_BRD, RTA_DST, RTA_GATEWAY, RTA_GENMASK, RTA_IFA, RTA_IFP, RTA_NETMASK, RTF_BLACKHOLE,
-    RTF_BROADCAST, RTF_CLONING, RTF_CONDEMNED, RTF_DEAD, RTF_DELCLONE, RTF_DONE, RTF_DYNAMIC,
-    RTF_GATEWAY, RTF_HOST, RTF_IFREF, RTF_IFSCOPE, RTF_LLINFO, RTF_LOCAL, RTF_MODIFIED,
-    RTF_MULTICAST, RTF_NOIFREF, RTF_PRCLONING, RTF_PROTO1, RTF_PROTO2, RTF_PROTO3, RTF_PROXY,
-    RTF_REJECT, RTF_ROUTER, RTF_STATIC, RTF_UP, RTF_WASCLONED, RTF_XRESOLVE, RTM_DELADDR,
-    RTM_NEWADDR,
+    ifa_msghdr, sockaddr, sockaddr_dl, sockaddr_in, sockaddr_in6, AF_INET, AF_INET6, AF_LINK,
+    RTA_AUTHOR, RTA_BRD, RTA_DST, RTA_GATEWAY, RTA_GENMASK, RTA_IFA, RTA_IFP, RTA_NETMASK,
+    RTF_BLACKHOLE, RTF_BROADCAST, RTF_CLONING, RTF_CONDEMNED, RTF_DEAD, RTF_DELCLONE, RTF_DONE,
+    RTF_DYNAMIC, RTF_GATEWAY, RTF_HOST, RTF_IFREF, RTF_IFSCOPE, RTF_LLINFO, RTF_LOCAL,
+    RTF_MODIFIED, RTF_MULTICAST, RTF_NOIFREF, RTF_PRCLONING, RTF_PROTO1, RTF_PROTO2, RTF_PROTO3,
+    RTF_PROXY, RTF_REJECT, RTF_ROUTER, RTF_STATIC, RTF_UP, RTF_WASCLONED, RTF_XRESOLVE,
+    RTM_DELADDR, RTM_NEWADDR,
 };
 
 use std::mem;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 pub struct AddressFlags(u32);
 
@@ -74,6 +74,12 @@ impl AddressFlags {
     }
 }
 
+impl std::fmt::Display for AddressFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AddressFlags({:08b})", self.0)
+    }
+}
+
 #[derive(Debug)]
 pub enum SockAddr {
     V4(SocketAddrV4),
@@ -89,39 +95,92 @@ impl SockAddr {
         // TODO: SAFETY: We're trusting that this truly is an accurate
         // struct as passed from the kernel. this should probably be removed from
         // the rest of the common parsing logic.
-        let sockaddr_in_ptr: *const sockaddr_in = data.as_ptr() as *const _;
-        let family = unsafe { (*sockaddr_in_ptr).sin_family as u32 };
+        let sockaddr_ptr: *const sockaddr = data.as_ptr() as *const _;
+        let family = unsafe { (*sockaddr_ptr).sa_family as u32 };
         // NOTE: we have to get this here, because otherwise we can't skip over
         // unsupported chunks when parsing
-        let len = unsafe { (*sockaddr_in_ptr).sin_len as usize };
-        log::trace!("len: {len}, data: {:?}", data);
-        let res = match family {
+        let len = unsafe { (*sockaddr_ptr).sa_len as usize };
+        log::trace!("family: {family}, len: {len}, data: {data:?}");
+        Ok(match family {
             AF_INET => {
                 log::debug!("IPV4 address");
                 let ptr: *const sockaddr_in = data.as_ptr() as *const _;
                 let v = <_ as NetStruct<_>>::from_raw(ptr)?;
-                Some(SockAddr::V4(v))
+                (Some(SockAddr::V4(v)), len)
             }
             AF_INET6 => {
                 log::debug!("IPV6 address");
                 let ptr: *const sockaddr_in6 = data.as_ptr() as *const _;
                 let v = <_ as NetStruct<_>>::from_raw(ptr)?;
-                Some(SockAddr::V6(v))
+                (Some(SockAddr::V6(v)), len)
             }
             AF_LINK => {
                 log::debug!("Data link(?) address");
                 let ptr: *const sockaddr_dl = data.as_ptr() as *const _;
                 let v = <_ as NetStruct<_>>::from_raw(ptr)?;
-                Some(SockAddr::Link(v))
+                (Some(SockAddr::Link(v)), len)
             }
             _ => {
-                log::warn!("Unsupported family {}", family);
-                None
+                assert!(len != 0, "0-length addr doesn't make sense!");
+                log::warn!("Unsupported family {family} (len {len}), skipping");
+                (None, len)
             }
-        };
-
-        Ok((res, len))
+        })
     }
+}
+
+pub fn parse_link(data: &[u8]) -> Result<(DataLinkAddr, usize), AddressParseError> {
+    if data.is_empty() {
+        return Err(AddressParseError::DataEmpty);
+    }
+    // TODO: SAFETY: We're trusting that this truly is an accurate
+    // struct as passed from the kernel. this should probably be removed from
+    // the rest of the common parsing logic.
+    let sockaddr_dl_ptr: *const sockaddr_dl = data.as_ptr() as *const _;
+    let family = unsafe { (*sockaddr_dl_ptr).sdl_family as u32 };
+    assert!(family == AF_LINK, "sdl_family must be AF_LINK");
+    // NOTE: we have to get this here, because otherwise we can't skip over
+    // unsupported chunks when parsing
+    let len = unsafe { (*sockaddr_dl_ptr).sdl_len as usize };
+    log::trace!("family: {family}, len: {len}, data: {data:?}");
+
+    let addr = unsafe { DataLinkAddr::from_raw(sockaddr_dl_ptr) };
+    Ok((addr, len))
+}
+
+pub fn parse_ip(data: &[u8]) -> Result<(SocketAddr, usize), AddressParseError> {
+    if data.is_empty() {
+        // return Err(AddressParseError::DataEmpty);
+    }
+    // TODO: SAFETY: We're trusting that this truly is an accurate
+    // struct as passed from the kernel. this should probably be removed from
+    // the rest of the common parsing logic.
+    let sockaddr_in_ptr: *const sockaddr_in = data.as_ptr() as *const _;
+    let family = unsafe { (*sockaddr_in_ptr).sin_family as u32 };
+    // NOTE: we have to get this here, because otherwise we can't skip over
+    // unsupported chunks when parsing
+    let len = unsafe { (*sockaddr_in_ptr).sin_len as usize };
+    log::trace!("family: {family}, len: {len}, data: {data:?}");
+
+    let (res, len) = match family {
+        AF_INET => {
+            log::debug!("IPV4 address");
+            let ptr: *const sockaddr_in = data.as_ptr() as *const _;
+            let p = unsafe { *ptr };
+            let v = <_ as NetStruct<_>>::from_raw(ptr)?;
+            (SocketAddr::V4(v), len)
+        }
+        AF_INET6 => {
+            log::debug!("IPV6 address");
+            let ptr: *const sockaddr_in6 = data.as_ptr() as *const _;
+            let p = unsafe { *ptr };
+            let v = <_ as NetStruct<_>>::from_raw(ptr)?;
+            (SocketAddr::V6(v), len)
+        }
+        _ => return Err(AddressParseError::WrongFamily(AF_INET, family)),
+    };
+
+    Ok((res, len))
 }
 
 #[derive(Debug)]
@@ -282,40 +341,32 @@ impl NetStruct<sockaddr_in6> for SocketAddrV6 {
 
 #[derive(thiserror::Error, Debug)]
 pub enum AddressParseError {
+    #[error("given struct has len field of zero, likely inconsistency")]
+    ZeroLen,
     #[error("given slice is empty")]
     DataEmpty,
     #[error("data given is larger than slice given")]
     PartialData,
     #[error("wrong family (expected {0}, got {1})")]
     WrongFamily(u32, u32),
+    #[error("can't have netmask without a known protocol")]
+    NetmaskWithoutKnownProto,
 }
 
 pub(crate) fn parse_address(data: &[u8]) -> Result<(Option<SockAddr>, usize), AddressParseError> {
     if data.is_empty() {
-        // TODO: our flag processing might be wonky?
-        return Ok((None, 0));
-        // return Err(AddressParseError::DataEmpty);
-    }
-
-    let sa_len = data[0] as usize;
-
-    log::trace!("len: {sa_len}");
-
-    if sa_len == 0 {
-        log::warn!("sa_len was 0, trying to read empty address?");
-        return Ok((None, sa_len));
-    }
-
-    // Make sure the buffer has enough data left
-    if sa_len > data.len() {
-        return Err(AddressParseError::PartialData);
+        return Err(AddressParseError::DataEmpty);
     }
 
     // TODO: SAFETY: We're trusting that this truly is an accurate
     // struct as passed from the kernel. this should probably be removed from
     // the rest of the common parsing logic.
-    let (res, _) = SockAddr::from_raw(&data[..sa_len]).unwrap();
-    Ok((res, sa_len))
+    let (res, len) = SockAddr::from_raw(data).unwrap();
+    match res.as_ref() {
+        Some(d) => log::trace!("read {:?}, ({len} bytes) from data", d),
+        None => log::trace!("empty read from data ({len} bytes skipped)"),
+    };
+    Ok((res, len))
 }
 
 #[derive(Debug)]
@@ -456,11 +507,11 @@ impl AddressInfoFlags {
 pub struct AddressSet {
     pub destination: Option<SockAddr>,
     pub gateway: Option<SockAddr>,
-    pub netmask: Option<SockAddr>,
-    pub genmask: Option<SockAddr>,
-    pub broadcast: Option<SockAddr>,
+    pub netmask: Option<IpAddr>,
+    pub genmask: Option<SocketAddr>,
+    pub broadcast: Option<SocketAddr>,
     pub interface_addr: Option<SockAddr>,
-    pub interface_link: Option<SockAddr>,
+    pub interface_link: Option<DataLinkAddr>,
 }
 
 #[derive(Debug)]
@@ -475,7 +526,10 @@ pub struct AddressInfo {
 impl AddressSet {
     pub fn from_raw(data: &[u8], flags: &AddressFlags) -> Result<Self, AddressParseError> {
         log::debug!("parsing addresses, data of length {}", data.len());
+        log::debug!("flags: {}", flags);
         let mut offset = 0;
+
+        let n = data.len();
 
         // Initialize variable to store route data
         let mut info = Self {
@@ -498,41 +552,118 @@ impl AddressSet {
         // RTA_AUTHOR
         // RTA_BRD
         if flags.has_destination() {
+            if offset >= n {
+                log::warn!("exiting early while parsing destination");
+                return Ok(info);
+            }
+
             log::trace!("parsing dest, offset {offset}");
             let (dest, len) = parse_address(&data[offset..])?;
             info.destination = dest;
+            log::trace!("dest: {:?}", info.destination);
             offset += len;
         }
 
         if flags.has_gateway() {
+            if offset >= n {
+                log::warn!("exiting early while parsing gateway");
+                return Ok(info);
+            }
+
             log::trace!("parsing gw, offset {offset}");
             let (gw, len) = parse_address(&data[offset..])?;
             info.gateway = gw;
+            log::trace!("gw: {:?}", info.gateway);
             offset += len;
         }
 
         if flags.has_netmask() {
+            if offset >= n {
+                log::warn!("exiting early while parsing netmask");
+                return Ok(info);
+            }
+
+            // From reading the source code...the netmask can be sent
+            // in different formats, depending on the type of event we receive.
+            //
+            // `route` assumes this always has a sa_family for GET events
             log::trace!("parsing netmask, offset {offset}");
-            let (netmask, len) = parse_address(&data[offset..])?;
-            info.netmask = netmask;
+            log::trace!("netmask data: {:?}", &data[offset..]);
+
+            let (sock_addr, len) = match parse_ip(&data[offset..]) {
+                Ok((addr, len)) => match addr {
+                    SocketAddr::V4(a) => (IpAddr::V4(*a.ip()), len),
+                    SocketAddr::V6(a) => (IpAddr::V6(*a.ip()), len),
+                },
+                Err(e) => {
+                    log::warn!("fallback case");
+                    // NOTE: Sometimes, a netmask is not given to us as a
+                    // sockaddr, but rather just as a raw IP. For some reason,
+                    // nobody in the past 10 years except for this guy seems
+                    // to have noticed: https://stackoverflow.com/q/33638206
+                    //
+                    // Have not yet run into this, though:
+                    // https://github.com/FRRouting/frr/blob/5c30b2e21205ecc60615b633dbc4714bae70a676/zebra/kernel_socket.c#L250-L253
+                    let sample = info.destination.as_ref().or_else(|| info.gateway.as_ref());
+                    log::warn!("sample: {sample:?}");
+                    match sample {
+                        Some(SockAddr::V4(_)) => {
+                            const N: usize = 4; // 4 bytes in ipv4
+                            let mut d = [0u8; N];
+                            d.clone_from_slice(&data[offset..offset + N]);
+
+                            // let addr = Ipv4Addr::from(d);
+                            (IpAddr::V4(d.into()), N)
+                        }
+                        Some(SockAddr::V6(_)) => {
+                            const N: usize = 16; // 16 bytes in ipv6
+                            let mut d = [0u8; N];
+                            d.clone_from_slice(&data[offset..offset + N]);
+                            (IpAddr::V6(d.into()), N)
+                        }
+                        Some(_) => panic!("netmask for link addr thingy"),
+                        None => {
+                            return Err(e);
+                            // return Err(AddressParseError::NetmaskWithoutKnownProto);
+                        }
+                    }
+                }
+            };
+
+            info.netmask = Some(sock_addr);
             offset += len;
         }
 
         if flags.has_genmask() {
+            if offset >= n {
+                log::warn!("exiting early while parsing genmask");
+                return Ok(info);
+            }
+
             log::trace!("parsing genmask, offset {offset}");
-            let (genmask, len) = parse_address(&data[offset..])?;
-            info.genmask = genmask;
+            let (genmask, len) = parse_ip(&data[offset..])?;
+            info.genmask = Some(genmask);
             offset += len;
         }
 
         if flags.has_interface_link() {
+            if offset >= n {
+                log::warn!("exiting early while parsing if_link");
+                return Ok(info);
+            }
+
             log::trace!("parsing link, offset {offset}");
-            let (if_link, len) = parse_address(&data[offset..])?;
-            info.interface_link = if_link;
+            let (if_link, len) = parse_link(&data[offset..])?;
+            info.interface_link = Some(if_link);
             offset += len;
         }
 
         if flags.has_interface_address() {
+            if offset >= n {
+                log::warn!("exiting early while parsing if_addr");
+                return Ok(info);
+            }
+
             log::trace!("parsing addr, offset {offset}");
             let (interface_addr, len) = parse_address(&data[offset..])?;
             info.interface_addr = interface_addr;
@@ -540,15 +671,25 @@ impl AddressSet {
         }
 
         if flags.has_author() {
+            if offset >= n {
+                log::warn!("exiting early while parsing author");
+                return Ok(info);
+            }
+
             log::trace!("parsing auth, offset {offset}");
             let (_, len) = parse_address(&data[offset..])?;
             offset += len;
         }
 
         if flags.has_brd() {
+            if offset >= n {
+                log::warn!("exiting early while parsing brd");
+                return Ok(info);
+            }
+
             log::trace!("parsing brd, offset {offset}");
-            let (broadcast, _) = parse_address(&data[offset..])?;
-            info.broadcast = broadcast;
+            let (broadcast, _) = parse_ip(&data[offset..])?;
+            info.broadcast = Some(broadcast);
         }
         Ok(info)
     }
@@ -622,7 +763,13 @@ impl AddressInfo {
 
         // Start of parsing sockaddr structures
         let addr_flags = AddressFlags::new(hdr.ifam_addrs as u32);
+        log::trace!("op: {op:?}, addr_flags: {}", addr_flags);
+        let n = std::mem::size_of::<ifa_msghdr>();
+        log::trace!("ifa_msghdr size: {n}");
+        let hdr_data = &data[..n];
+        log::trace!("ifa_msghdr data: {hdr_data:?}");
         let addrs_data = &data[std::mem::size_of::<ifa_msghdr>()..];
+        log::trace!("full address info data: {:?}", addrs_data);
         let addrs = AddressSet::from_raw(addrs_data, &addr_flags)?;
 
         // Initialize variable to store route data

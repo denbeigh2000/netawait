@@ -39,7 +39,13 @@ enum InterfaceSpec {
 #[derive(Debug)]
 enum WaitCondition {
     AnyDefaultRoute,
-    Interface(InterfaceSpec),
+    Interface(InterfaceCondition, InterfaceSpec),
+}
+
+#[derive(Clone, Debug)]
+enum InterfaceCondition {
+    HasAddress,
+    HasRoute,
 }
 
 fn to_ifspec(if_name: &str) -> InterfaceSpec {
@@ -64,28 +70,29 @@ fn real_main() -> Result<(), ReadError> {
     // catch up on any events we missed (e.g., new interfaces, etc). Otherwise
     // we could miss an interface/route created between the time we queried
     // and the time we opened the socket.
-    let mut rs = RouteSocket::new(args.timeout_secs).unwrap();
+    let mut rs = RouteSocket::new().unwrap();
 
     // NOTE: mut so we can eventually change this to an Index when we find one
     // that we want
     let mut wait_cond = match args.wait_condition {
         WaitConditionFlag::DefaultRouteExists => WaitCondition::AnyDefaultRoute,
-        // TODO: need to properly implement these
         WaitConditionFlag::InterfaceHasRoute(if_name) => {
-            WaitCondition::Interface(to_ifspec(&if_name))
+            let spec = to_ifspec(&if_name);
+            WaitCondition::Interface(InterfaceCondition::HasRoute, spec)
         }
         WaitConditionFlag::InterfaceHasAddress(if_name) => {
-            WaitCondition::Interface(to_ifspec(&if_name))
+            let spec = to_ifspec(&if_name);
+            WaitCondition::Interface(InterfaceCondition::HasAddress, spec)
         }
     };
 
     match wait_cond {
         WaitCondition::AnyDefaultRoute => rs.request_default_ipv4().unwrap(),
-        WaitCondition::Interface(InterfaceSpec::Index(idx)) => {
+        WaitCondition::Interface(_, InterfaceSpec::Index(idx)) => {
             rs.request_interface_info(idx).unwrap()
         }
-        WaitCondition::Interface(InterfaceSpec::Name(ref if_name)) => {
-            log::debug!("No interface index found for {if_name}")
+        WaitCondition::Interface(_, InterfaceSpec::Name(ref if_name)) => {
+            log::info!("No interface index found for {if_name}")
         }
     }
 
@@ -94,26 +101,33 @@ fn real_main() -> Result<(), ReadError> {
     loop {
         let packet = rs.recv()?;
         log::debug!("received: {}", packet.print_self());
-        match &wait_cond {
+        match &mut wait_cond {
             WaitCondition::AnyDefaultRoute => {
                 // This was an event which notes that a default route is up.
                 if is_ready_default_route(&packet) {
                     return Ok(());
                 }
             }
-            WaitCondition::Interface(if_spec) => {
-                match is_given_interface_running(&packet, if_spec) {
-                    // Our interface is running
-                    (true, _) => return Ok(()),
-                    // Our interface isn't running, but we found an index for
-                    // it to use later.
-                    (false, Some(idx)) => {
-                        // NOTE: rust thinks this is unused?
-                        wait_cond = WaitCondition::Interface(InterfaceSpec::Index(idx));
-                        continue;
+            WaitCondition::Interface(ref mut cond, ref mut spec) => {
+                // NOTE: We permit specifying by an interface name, but this is not
+                // present in every event we receive. However, the interface index is. If
+                // we are currently looking for an index name, we also do an additional
+                // check to see if we've gotten a link event, and if it is a link event for
+                // our interface, and use that to identify the interface instead.
+                if let InterfaceSpec::Name(name) = &spec {
+                    if let Some(idx) = index_for_name(&packet, name) {
+                        *spec = InterfaceSpec::Index(idx);
                     }
-                    // Neither.
-                    _ => continue,
+                }
+
+                match spec {
+                    InterfaceSpec::Index(idx) => {
+                        if is_given_interface_running(&packet, cond, idx) {
+                            return Ok(());
+                        }
+                    }
+                    // We've already `continue`d above if spec is a Name
+                    InterfaceSpec::Name(_) => unreachable!(),
                 }
             }
         };
@@ -160,7 +174,6 @@ fn is_ready_default_route(h: &Header) -> bool {
 
 fn is_not_local_addr(addr: &SockAddr) -> bool {
     match addr {
-        SockAddr::Link(_) => false,
         SockAddr::V4(a) => {
             let ip = *a.ip();
             let b = !(LOCAL_IPV4_RANGE.contains(ip) || LINK_LOCAL_IPV4_RANGE.contains(ip));
@@ -174,119 +187,69 @@ fn is_not_local_addr(addr: &SockAddr) -> bool {
             log::trace!("{ip} not local? {b}");
             !(*LOCAL_IPV6_ADDR == ip || LINK_LOCAL_IPV6_RANGE.contains(ip))
         }
+        _ => false,
     }
 }
 
-fn is_given_interface_running(h: &Header, given_spec: &InterfaceSpec) -> (bool, Option<u16>) {
-    // NOTE: We permit specifying by an interface name, but this is not
-    // present in every event we receive. However, the interface index is. If
-    // we are currently looking for an index name, we also do an additional
-    // check to see if we've gotten a link event, and if it is a link event for
-    // our interface, and use that to identify the interface instead.
-    let updated_index = match given_spec {
-        InterfaceSpec::Index(_) => None,
-        InterfaceSpec::Name(n) => match &h.addrs().interface_link {
-            Some(SockAddr::Link(l)) => {
-                if l.interface_name.as_str() == n {
-                    Some(l.index)
-                } else {
-                    None
-                }
-            }
+fn index_for_name(h: &Header, if_name: &str) -> Option<u16> {
+    match h.addrs().interface_link.as_ref() {
+        Some(la) => match la.interface_name.as_str() {
+            n if n == if_name => Some(la.index),
             _ => None,
         },
-    };
+        _ => None,
+    }
+}
 
-    // If we've found a more accurate representation of our interface earlier
-    // this run, be sure to use it for this check instead of the name.
-    let spec = match updated_index {
-        Some(idx) => InterfaceSpec::Index(idx),
-        // TODO: feels silly to clone for this?
-        None => given_spec.clone(),
-    };
+fn is_given_interface_running(h: &Header, condition: &InterfaceCondition, index: &u16) -> bool {
+    let idx = h.index();
+    if *index != idx as u16 {
+        log::trace!("wrong index {index}");
+        return false;
+    }
 
-    let (index, is_alive) = match h {
+    let is_alive = match h {
         Header::Link(link) => match link.operation {
-            LinkMessageType::Info => (link.index, (link.flags.is_up() && link.flags.is_running())),
-            _ => return (false, updated_index),
+            LinkMessageType::Info => link.flags.is_up() && link.flags.is_running(),
+            _ => return false,
         },
         Header::Address(addr) => match addr.operation {
-            AddressOperation::Add => (addr.index, addr.flags.is_up() && !addr.flags.is_dead()),
-            _ => return (false, updated_index),
+            AddressOperation::Add => addr.flags.is_up() && !addr.flags.is_dead(),
+            _ => return false,
         },
         Header::Route(route) => match route.operation {
             RouteMessageType::Add | RouteMessageType::Get => match route.addrs.destination.as_ref()
             {
                 Some(dest) => {
                     if is_not_local_addr(dest) {
-                        (route.index, route.flags.is_up())
+                        route.flags.is_up()
                     } else {
-                        return (false, updated_index);
+                        return false;
                     }
                 }
-                None => return (false, updated_index),
+                None => false,
             },
-            _ => return (false, updated_index),
+            _ => return false,
         },
     };
 
     log::trace!("index {index} alive? {is_alive}");
-
-    // TODO: This whole logic is kinda kludgy. It goes and checks whether we
-    // have a route that is default, and if that's not true, checks to see
-    // whether it has a non-local + non-self-assigned IP address, and returns
-    // true.
-    // The logic should probably be defined such that we have one clearly
-    // defined check, or subcommands for different checks
-    match spec {
-        InterfaceSpec::Index(idx) => {
-            if index != idx as u32 {
-                log::trace!("wrong index {index}");
-                return (false, updated_index);
-            }
-
-            // The interface is up and alive
-            if is_alive {
-                let addrs = h.addrs();
-                // TODO: cleanu
-                match addrs.destination {
-                    Some(SockAddr::V4(addr)) => {
-                        if *addr.ip() == *ZERO_IPV4 {
-                            log::info!("found default IPV4 route");
-                            return (true, updated_index);
-                        }
-                    }
-                    Some(SockAddr::V6(addr)) => {
-                        if *addr.ip() == *ZERO_IPV6 {
-                            log::info!("found default IPV6 route");
-                            return (true, updated_index);
-                        }
-                    }
-                    _ => (),
-                };
-
-                return (
-                    // TODO: Should we make a separate check for if the
-                    // interface has a known good ip?
-                    h.addrs()
-                        .interface_addr
-                        .as_ref()
-                        .map(is_not_local_addr)
-                        .unwrap_or(false),
-                    updated_index,
-                );
-            }
-        }
-        InterfaceSpec::Name(_) => {
-            // NOTE: i don't think it's possible to get here?
-            // TODO: confirm
-            return (false, updated_index);
-        }
+    if !is_alive {
+        // The interface (or route) is not up and alive
+        return false;
     }
 
-    log::trace!("default case");
-
-    (false, updated_index)
+    let addrs = h.addrs();
+    match &condition {
+        InterfaceCondition::HasRoute => match &addrs.destination {
+            Some(dest) => is_not_local_addr(dest),
+            _ => false,
+        },
+        InterfaceCondition::HasAddress => match &addrs.interface_addr {
+            Some(addr) => is_not_local_addr(addr),
+            _ => false,
+        },
+    }
 }
 
 fn main() {

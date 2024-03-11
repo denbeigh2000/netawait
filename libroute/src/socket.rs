@@ -40,7 +40,7 @@ pub struct RouteSocket {
 }
 
 impl RouteSocket {
-    pub fn new(_timeout: Option<i64>) -> io::Result<Self> {
+    pub fn new() -> io::Result<Self> {
         let s = nix_socket::socket(AddressFamily::Route, SockType::Raw, SockFlag::empty(), None)?;
 
         // TODO: The setsockopt approach doesn't do what we want, because we're
@@ -194,6 +194,9 @@ impl RouteSocket {
         Ok(())
     }
 
+    // TODO: Want to also receive with an overall timeout. Maybe i can factor
+    // out the implementation of receiving on a socket so i only use kqueue
+    // when i need to?
     fn recv_raw(&mut self) -> Result<Option<Header>, ReadError> {
         Ok(match self.inner.read(&mut self.buf)? {
             0 => {
