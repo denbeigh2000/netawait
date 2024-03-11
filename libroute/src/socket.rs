@@ -1,5 +1,7 @@
 use crate::addresses::AddressParseError;
 use crate::header::Header;
+use nix::libc::uintptr_t;
+use nix::sys::event::{EventFilter, EventFlag, FilterFlag, KEvent, Kqueue};
 use route_sys::{
     in_addr, route_request, rt_metrics, rt_msghdr, sockaddr_dl, sockaddr_in, AF_INET, RTA_DST,
     RTA_IFA, RTA_IFP, RTA_NETMASK, RTF_GATEWAY, RTF_HOST, RTF_IFSCOPE, RTF_UP, RTM_GET,
@@ -11,7 +13,120 @@ use nix::sys::socket::{self as nix_socket, AddressFamily, SockFlag, SockType};
 
 use std::io::{self, Read, Write};
 use std::mem::size_of;
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
+
+const KEVENT_TIMEOUT_ID: uintptr_t = 61;
+
+const ADDR_LEN: usize = size_of::<sockaddr_dl>();
+const HDR_LEN: usize = size_of::<rt_msghdr>();
+const INT_REQ_SIZE: usize = ADDR_LEN + HDR_LEN;
+
+fn interface_info_req(if_idx: u16, seq: i32) -> [u8; INT_REQ_SIZE] {
+    let hdr = rt_msghdr {
+        rtm_msglen: INT_REQ_SIZE as u16,
+        rtm_version: RTM_VERSION as u8,
+        rtm_type: RTM_GET as u8,
+        rtm_index: if_idx,
+        // Required to scope the request down to just the index specifiecd
+        // in rtm_index
+        rtm_flags: (RTF_IFSCOPE | RTF_HOST) as i32,
+        rtm_addrs: (RTA_DST | RTA_IFP | RTA_IFA) as i32,
+        rtm_pid: 0,
+        rtm_seq: seq,
+        rtm_errno: 0,
+        rtm_use: 0,
+        rtm_inits: 0,
+        // rtm_inits: RTV_HOPCOUNT,
+        rtm_rmx: rt_metrics {
+            rmx_expire: 0,
+            rmx_locks: 0,
+            rmx_mtu: 0,
+            rmx_hopcount: 0,
+            rmx_recvpipe: 0,
+            rmx_sendpipe: 0,
+            rmx_ssthresh: 0,
+            rmx_rtt: 0,
+            rmx_rttvar: 0,
+            rmx_pksent: 0,
+            rmx_state: 0,
+            rmx_filler: [0u32; 3],
+        },
+    };
+    let sockaddr = sockaddr_dl {
+        sdl_len: ADDR_LEN as u8,
+        sdl_family: AF_INET as u8,
+        sdl_index: if_idx,
+        sdl_type: 0,
+        sdl_nlen: 0,
+        sdl_alen: 0,
+        sdl_slen: 0,
+        sdl_data: [0i8; 12],
+    };
+
+    let mut buf = [0u8; INT_REQ_SIZE];
+    let (hdr_slice, addr_slice) = unsafe {
+        let hdr_ptr = (&hdr) as *const _ as *const u8;
+        let hdr_slice = std::slice::from_raw_parts(hdr_ptr, HDR_LEN);
+
+        let addr_ptr = (&sockaddr) as *const _ as *const u8;
+        let addr_slice = std::slice::from_raw_parts(addr_ptr, ADDR_LEN);
+
+        (hdr_slice, addr_slice)
+    };
+
+    buf[..HDR_LEN].copy_from_slice(hdr_slice);
+    buf[HDR_LEN..].copy_from_slice(addr_slice);
+
+    buf
+}
+
+fn default_ipv4_request(seq: i32) -> route_request {
+    let raw_addr_4 = in_addr { s_addr: 0 };
+    route_request {
+        rtm: rt_msghdr {
+            rtm_msglen: size_of::<route_request>() as u16,
+            rtm_version: RTM_VERSION as u8,
+            rtm_type: RTM_GET as u8,
+            rtm_index: 0,
+            rtm_flags: (RTF_UP as i32) | (RTF_GATEWAY as i32),
+            rtm_addrs: (RTA_DST as i32) | (RTA_NETMASK as i32),
+            rtm_pid: 0,
+            rtm_seq: seq,
+            rtm_errno: 0,
+            rtm_use: 0,
+            rtm_inits: RTV_HOPCOUNT,
+            rtm_rmx: rt_metrics {
+                rmx_expire: 0,
+                rmx_locks: 0,
+                rmx_mtu: 0,
+                rmx_hopcount: 0,
+                rmx_recvpipe: 0,
+                rmx_sendpipe: 0,
+                rmx_ssthresh: 0,
+                rmx_rtt: 0,
+                rmx_rttvar: 0,
+                rmx_pksent: 0,
+                rmx_state: 0,
+                rmx_filler: [0u32; 3],
+            },
+        },
+        dst: sockaddr_in {
+            sin_len: size_of::<sockaddr_in>() as u8,
+            sin_family: AF_INET as u8,
+            sin_port: 0,
+            sin_addr: raw_addr_4,
+            sin_zero: [0; 8],
+        },
+        mask: sockaddr_in {
+            sin_len: size_of::<sockaddr_in>() as u8,
+            sin_family: AF_INET as u8,
+            sin_port: 0,
+            sin_addr: raw_addr_4,
+            sin_zero: [0; 8],
+        },
+    }
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum ReadError {
@@ -33,71 +148,114 @@ impl From<io::Error> for ReadError {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RouteSocketCreateError {
+    #[error("error creating kqueue: {0}")]
+    CreatingKqueue(io::Error),
+    #[error("error creating pf_route socket: {0})")]
+    CreatingSocket(io::Error),
+}
+
+// #[derive(thiserror::Error, Debug)]
+// pub enum ReadError {
+//     Timeout,
+//     Error(#[from] io::Error),
+// }
+
+impl From<nix::errno::Errno> for ReadError {
+    fn from(value: nix::errno::Errno) -> Self {
+        Self::IO(io::Error::from_raw_os_error(value as i32))
+    }
+}
+
 pub struct RouteSocket {
     seq: i32,
     buf: [u8; 2048],
-    inner: UnixStream,
+    kqueue: Kqueue,
+    events: Vec<KEvent>,
+    event_buf: Vec<KEvent>,
+
+    raw_socket_fd: usize,
+    socket: UnixStream,
 }
 
 impl RouteSocket {
-    pub fn new() -> io::Result<Self> {
-        let s = nix_socket::socket(AddressFamily::Route, SockType::Raw, SockFlag::empty(), None)?;
+    pub fn new(timeout_secs: Option<i32>) -> Result<Self, RouteSocketCreateError> {
+        let socket =
+            nix_socket::socket(AddressFamily::Route, SockType::Raw, SockFlag::empty(), None)
+                .map_err(|e| RouteSocketCreateError::CreatingSocket(e.into()))?;
 
-        // TODO: The setsockopt approach doesn't do what we want, because we're
-        // setting a timeout between events, not on how long the socket stays
-        // open.
+        let kqueue = Kqueue::new().map_err(|e| RouteSocketCreateError::CreatingKqueue(e.into()))?;
 
-        let buf = [0u8; 2048];
-        let seq = 0;
-        let inner = s.into();
-        Ok(Self { buf, inner, seq })
+        let mut events = Vec::with_capacity(if timeout_secs.is_none() { 1 } else { 2 });
+
+        if let Some(sec) = timeout_secs {
+            let timeout_event = KEvent::new(
+                KEVENT_TIMEOUT_ID,
+                EventFilter::EVFILT_TIMER,
+                EventFlag::EV_ONESHOT | EventFlag::EV_ADD | EventFlag::EV_ENABLE,
+                FilterFlag::NOTE_SECONDS,
+                sec as isize,
+                0,
+            );
+            events.push(timeout_event);
+        }
+
+        let raw_socket_fd = socket
+            .as_raw_fd()
+            .try_into()
+            .expect("socket file descriptor doesn't fit into isize");
+
+        let read_event = KEvent::new(
+            raw_socket_fd,
+            EventFilter::EVFILT_READ,
+            EventFlag::EV_ADD | EventFlag::EV_ENABLE,
+            FilterFlag::empty(),
+            0,
+            0,
+        );
+
+        events.push(read_event);
+
+        Ok(Self {
+            seq: 0,
+            buf: [0; 2048],
+
+            kqueue,
+            event_buf: events.clone(),
+            events,
+
+            socket: socket.into(),
+            raw_socket_fd,
+        })
     }
 
+    pub fn recv(&mut self) -> Result<Header, ReadError> {
+        let res = self
+            .kqueue
+            .kevent(&self.events, &mut self.event_buf, None)?;
+
+        match res {
+            1..=2 => {
+                let event = self.event_buf.first().expect("i hope we've populated this");
+                match event.ident() {
+                    KEVENT_TIMEOUT_ID => Err(ReadError::Timeout),
+                    id if id == self.raw_socket_fd => {
+                        let n = self.socket.read(&mut self.buf)?;
+                        log::trace!("read {n} bytes w kevent");
+
+                        let res = Header::from_raw(&self.buf[..n])?;
+                        Ok(res.unwrap())
+                    }
+                    n => panic!("unknown event from kevent {n}"),
+                }
+            }
+            n @ 3.. => panic!("somehow we got more elements from kevent than we put in? {n}"),
+            n @ ..=0 => panic!("we got {n} elements from kevent?"),
+        }
+    }
     pub fn request_default_ipv4(&mut self) -> io::Result<()> {
-        let raw_addr_4 = in_addr { s_addr: 0 };
-        let request = route_request {
-            rtm: rt_msghdr {
-                rtm_msglen: size_of::<route_request>() as u16,
-                rtm_version: RTM_VERSION as u8,
-                rtm_type: RTM_GET as u8,
-                rtm_index: 0,
-                rtm_flags: (RTF_UP as i32) | (RTF_GATEWAY as i32),
-                rtm_addrs: (RTA_DST as i32) | (RTA_NETMASK as i32),
-                rtm_pid: 0,
-                rtm_seq: self.get_seq(),
-                rtm_errno: 0,
-                rtm_use: 0,
-                rtm_inits: RTV_HOPCOUNT,
-                rtm_rmx: rt_metrics {
-                    rmx_expire: 0,
-                    rmx_locks: 0,
-                    rmx_mtu: 0,
-                    rmx_hopcount: 0,
-                    rmx_recvpipe: 0,
-                    rmx_sendpipe: 0,
-                    rmx_ssthresh: 0,
-                    rmx_rtt: 0,
-                    rmx_rttvar: 0,
-                    rmx_pksent: 0,
-                    rmx_state: 0,
-                    rmx_filler: [0u32; 3],
-                },
-            },
-            dst: sockaddr_in {
-                sin_len: size_of::<sockaddr_in>() as u8,
-                sin_family: AF_INET as u8,
-                sin_port: 0,
-                sin_addr: raw_addr_4,
-                sin_zero: [0; 8],
-            },
-            mask: sockaddr_in {
-                sin_len: size_of::<sockaddr_in>() as u8,
-                sin_family: AF_INET as u8,
-                sin_port: 0,
-                sin_addr: raw_addr_4,
-                sin_zero: [0; 8],
-            },
-        };
+        let request = default_ipv4_request(self.get_seq());
 
         log::trace!("req: {:?}", request);
         let request_bytes: &[u8] = unsafe {
@@ -111,67 +269,10 @@ impl RouteSocket {
     }
 
     pub fn request_interface_info(&mut self, if_idx: u16) -> io::Result<()> {
-        const ADDR_LEN: usize = size_of::<sockaddr_dl>();
-        const SIZE: usize = HDR_LEN + ADDR_LEN;
-        const HDR_LEN: usize = size_of::<rt_msghdr>();
-        let hdr = rt_msghdr {
-            rtm_msglen: SIZE as u16,
-            rtm_version: RTM_VERSION as u8,
-            rtm_type: RTM_GET as u8,
-            rtm_index: if_idx,
-            // Required to scope the request down to just the index specifiecd
-            // in rtm_index
-            rtm_flags: (RTF_IFSCOPE | RTF_HOST) as i32,
-            rtm_addrs: (RTA_DST | RTA_IFP | RTA_IFA) as i32,
-            rtm_pid: 0,
-            rtm_seq: self.get_seq(),
-            rtm_errno: 0,
-            rtm_use: 0,
-            rtm_inits: 0,
-            // rtm_inits: RTV_HOPCOUNT,
-            rtm_rmx: rt_metrics {
-                rmx_expire: 0,
-                rmx_locks: 0,
-                rmx_mtu: 0,
-                rmx_hopcount: 0,
-                rmx_recvpipe: 0,
-                rmx_sendpipe: 0,
-                rmx_ssthresh: 0,
-                rmx_rtt: 0,
-                rmx_rttvar: 0,
-                rmx_pksent: 0,
-                rmx_state: 0,
-                rmx_filler: [0u32; 3],
-            },
-        };
-        let sockaddr = sockaddr_dl {
-            sdl_len: ADDR_LEN as u8,
-            sdl_family: AF_INET as u8,
-            sdl_index: if_idx,
-            sdl_type: 0,
-            sdl_nlen: 0,
-            sdl_alen: 0,
-            sdl_slen: 0,
-            sdl_data: [0i8; 12],
-        };
-
-        let mut buf = [0u8; SIZE];
-        let (hdr_slice, addr_slice) = unsafe {
-            let hdr_ptr = (&hdr) as *const _ as *const u8;
-            let hdr_slice = std::slice::from_raw_parts(hdr_ptr, HDR_LEN);
-
-            let addr_ptr = (&sockaddr) as *const _ as *const u8;
-            let addr_slice = std::slice::from_raw_parts(addr_ptr, ADDR_LEN);
-
-            (hdr_slice, addr_slice)
-        };
-
-        buf[..HDR_LEN].copy_from_slice(hdr_slice);
-        buf[HDR_LEN..].copy_from_slice(addr_slice);
+        let req = interface_info_req(if_idx, self.get_seq());
 
         log::debug!("sending if for idx {if_idx}");
-        self.send(&buf)?;
-        // self.send(hdr_slice)?;
+        self.send(&req)?;
         Ok(())
     }
 
@@ -181,7 +282,7 @@ impl RouteSocket {
     }
 
     fn send(&mut self, request_bytes: &[u8]) -> io::Result<()> {
-        if let Err(e) = self.inner.write_all(request_bytes) {
+        if let Err(e) = self.socket.write_all(request_bytes) {
             // NOTE: macos returns "No such process" when you request the
             // default route and it's not evailable.
             if e.raw_os_error() != Some(3) {
@@ -192,40 +293,6 @@ impl RouteSocket {
         }
 
         Ok(())
-    }
-
-    // TODO: Want to also receive with an overall timeout. Maybe i can factor
-    // out the implementation of receiving on a socket so i only use kqueue
-    // when i need to?
-    fn recv_raw(&mut self) -> Result<Option<Header>, ReadError> {
-        Ok(match self.inner.read(&mut self.buf)? {
-            0 => {
-                log::warn!("empty read?");
-                None
-            }
-            size => {
-                log::trace!("received payload of size {size}");
-                log::trace!("data: {:?}", &self.buf[..size]);
-                Header::from_raw(&self.buf[..size])?
-            }
-        })
-    }
-
-    pub fn recv(&mut self) -> Result<Header, ReadError> {
-        loop {
-            if let Some(info) = self.recv_raw()? {
-                return Ok(info);
-            }
-        }
-    }
-
-    pub fn monitor(&mut self) -> Result<(), ReadError> {
-        loop {
-            match self.recv_raw()? {
-                Some(i) => eprintln!("collected route: {}", i.print_self()),
-                None => eprintln!(),
-            }
-        }
     }
 }
 

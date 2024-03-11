@@ -166,14 +166,12 @@ pub fn parse_ip(data: &[u8]) -> Result<(SocketAddr, usize), AddressParseError> {
         AF_INET => {
             log::debug!("IPV4 address");
             let ptr: *const sockaddr_in = data.as_ptr() as *const _;
-            let p = unsafe { *ptr };
             let v = <_ as NetStruct<_>>::from_raw(ptr)?;
             (SocketAddr::V4(v), len)
         }
         AF_INET6 => {
             log::debug!("IPV6 address");
             let ptr: *const sockaddr_in6 = data.as_ptr() as *const _;
-            let p = unsafe { *ptr };
             let v = <_ as NetStruct<_>>::from_raw(ptr)?;
             (SocketAddr::V6(v), len)
         }
@@ -203,6 +201,9 @@ impl DataLinkAddr {
         strs.join(":")
     }
 
+    /// # Safety
+    /// This should only be called with a sockaddr_dl pointer from the
+    /// kernel
     pub unsafe fn from_raw(ptr: *const sockaddr_dl) -> Self {
         let addr = *ptr;
 
@@ -604,7 +605,7 @@ impl AddressSet {
                     //
                     // Have not yet run into this, though:
                     // https://github.com/FRRouting/frr/blob/5c30b2e21205ecc60615b633dbc4714bae70a676/zebra/kernel_socket.c#L250-L253
-                    let sample = info.destination.as_ref().or_else(|| info.gateway.as_ref());
+                    let sample = info.destination.as_ref().or(info.gateway.as_ref());
                     log::warn!("sample: {sample:?}");
                     match sample {
                         Some(SockAddr::V4(_)) => {

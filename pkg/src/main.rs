@@ -70,7 +70,8 @@ fn real_main() -> Result<(), ReadError> {
     // catch up on any events we missed (e.g., new interfaces, etc). Otherwise
     // we could miss an interface/route created between the time we queried
     // and the time we opened the socket.
-    let mut rs = RouteSocket::new().unwrap();
+    // let mut rs = RouteSocket::new().unwrap();
+    let mut rs = RouteSocket::new(args.timeout).unwrap();
 
     // NOTE: mut so we can eventually change this to an Index when we find one
     // that we want

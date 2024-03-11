@@ -16,6 +16,10 @@ pub struct Args {
     /// If specified, waits for this interface to be up AND assigned a route OR address.
     #[arg(short, long)]
     pub wait_condition: WaitConditionFlag,
+
+    /// If specified, will only wait this long for our condition to be met
+    #[arg(short, long)]
+    pub timeout: Option<i32>,
 }
 
 #[derive(Clone)]

@@ -294,6 +294,7 @@ dependencies = [
 name = "libroute"
 version = "0.1.0"
 dependencies = [
+ "lazy_static",
  "log",
  "nix 0.28.0",
  "route-sys",
