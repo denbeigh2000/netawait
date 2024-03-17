@@ -1,14 +1,13 @@
+use std::net::{Ipv4Addr, Ipv6Addr};
+
+use clap::Parser;
 use flags::Args;
+use ipnetwork::{Ipv4Network, Ipv6Network};
 use libroute::addresses::{AddressOperation, SockAddr};
 use libroute::header::Header;
 use libroute::link::MessageType as LinkMessageType;
 use libroute::route::MessageType as RouteMessageType;
 use libroute::socket::{get_ifindex, ReadError, RouteSocket};
-
-use clap::Parser;
-use ipnetwork::{Ipv4Network, Ipv6Network};
-
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 use crate::flags::WaitConditionFlag;
 

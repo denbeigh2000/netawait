@@ -1,11 +1,23 @@
+use nix::libc::{
+    if_indextoname,
+    rt_msghdr,
+    IFNAMSIZ,
+    RTM_ADD,
+    RTM_CHANGE,
+    RTM_DELADDR,
+    RTM_DELETE,
+    RTM_GET,
+    RTM_GET2,
+    RTM_IFINFO,
+    RTM_IFINFO2,
+    RTM_NEWADDR,
+    RTM_OLDADD,
+    RTM_OLDDEL,
+};
+
 use crate::addresses::{AddressInfo, AddressParseError, AddressSet};
 use crate::link::LinkInfo;
 use crate::route::RouteInfo;
-
-use nix::libc::{
-    if_indextoname, rt_msghdr, IFNAMSIZ, RTM_ADD, RTM_CHANGE, RTM_DELADDR, RTM_DELETE, RTM_GET,
-    RTM_GET2, RTM_IFINFO, RTM_IFINFO2, RTM_NEWADDR, RTM_OLDADD, RTM_OLDDEL,
-};
 
 #[derive(Debug)]
 pub enum Header {

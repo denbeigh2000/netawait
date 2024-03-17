@@ -1,19 +1,34 @@
-use crate::addresses::AddressParseError;
-use crate::header::Header;
-use nix::libc::uintptr_t;
-use nix::libc::{
-    in_addr, rt_metrics, rt_msghdr, sockaddr_dl, sockaddr_in, AF_INET, RTA_DST, RTA_IFA, RTA_IFP,
-    RTA_NETMASK, RTF_GATEWAY, RTF_HOST, RTF_IFSCOPE, RTF_UP, RTM_GET, RTM_VERSION, RTV_HOPCOUNT,
-};
-use nix::sys::event::{EventFilter, EventFlag, FilterFlag, KEvent, Kqueue};
-
-use nix::net::if_::if_nametoindex;
-use nix::sys::socket::{self as nix_socket, AddressFamily, SockFlag, SockType};
-
 use std::io::{self, Read, Write};
 use std::mem::size_of;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
+
+use nix::libc::{
+    in_addr,
+    rt_metrics,
+    rt_msghdr,
+    sockaddr_dl,
+    sockaddr_in,
+    uintptr_t,
+    AF_INET,
+    RTA_DST,
+    RTA_IFA,
+    RTA_IFP,
+    RTA_NETMASK,
+    RTF_GATEWAY,
+    RTF_HOST,
+    RTF_IFSCOPE,
+    RTF_UP,
+    RTM_GET,
+    RTM_VERSION,
+    RTV_HOPCOUNT,
+};
+use nix::net::if_::if_nametoindex;
+use nix::sys::event::{EventFilter, EventFlag, FilterFlag, KEvent, Kqueue};
+use nix::sys::socket::{self as nix_socket, AddressFamily, SockFlag, SockType};
+
+use crate::addresses::AddressParseError;
+use crate::header::Header;
 
 const KEVENT_TIMEOUT_ID: uintptr_t = 61;
 

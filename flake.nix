@@ -32,8 +32,8 @@
 
         buildPackages = {
           common = {
-            inherit (pkgs.rust-bin.stable.latest) default;
-            inherit (pkgs.rust-bin.nightly.latest) rustfmt;
+            inherit (pkgs.rust-bin.stable.latest) default rust-analyzer-preview;
+            inherit (pkgs.rust-bin.nightly.latest) rustfmt-preview;
           };
           darwin = {
             inherit (pkgs) libiconv libclang stdenv;

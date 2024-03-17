@@ -1,8 +1,16 @@
-use crate::addresses::{AddressFlags, AddressParseError, AddressSet};
-
 use nix::libc::{
-    rt_metrics, rt_msghdr, RTF_GATEWAY, RTF_UP, RTM_ADD, RTM_CHANGE, RTM_DELETE, RTM_GET, RTM_GET2,
+    rt_metrics,
+    rt_msghdr,
+    RTF_GATEWAY,
+    RTF_UP,
+    RTM_ADD,
+    RTM_CHANGE,
+    RTM_DELETE,
+    RTM_GET,
+    RTM_GET2,
 };
+
+use crate::addresses::{AddressFlags, AddressParseError, AddressSet};
 
 #[derive(Clone, Debug)]
 /// Type of message from kernel

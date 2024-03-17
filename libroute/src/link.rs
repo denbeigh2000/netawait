@@ -1,10 +1,27 @@
-use crate::addresses::{AddressFlags, AddressParseError, AddressSet};
-
 use nix::libc::{
-    if_msghdr, IFF_ALLMULTI, IFF_BROADCAST, IFF_DEBUG, IFF_LOOPBACK, IFF_NOARP, IFF_NOTRAILERS,
-    IFF_OACTIVE, IFF_POINTOPOINT, IFF_PROMISC, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, RTM_DELADDR,
-    RTM_DELMADDR, RTM_IFINFO, RTM_IFINFO2, RTM_NEWADDR, RTM_NEWMADDR, RTM_NEWMADDR2,
+    if_msghdr,
+    IFF_ALLMULTI,
+    IFF_BROADCAST,
+    IFF_DEBUG,
+    IFF_LOOPBACK,
+    IFF_NOARP,
+    IFF_NOTRAILERS,
+    IFF_OACTIVE,
+    IFF_POINTOPOINT,
+    IFF_PROMISC,
+    IFF_RUNNING,
+    IFF_SIMPLEX,
+    IFF_UP,
+    RTM_DELADDR,
+    RTM_DELMADDR,
+    RTM_IFINFO,
+    RTM_IFINFO2,
+    RTM_NEWADDR,
+    RTM_NEWMADDR,
+    RTM_NEWMADDR2,
 };
+
+use crate::addresses::{AddressFlags, AddressParseError, AddressSet};
 
 #[derive(Debug)]
 pub enum MessageType {
