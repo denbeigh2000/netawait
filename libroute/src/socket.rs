@@ -231,27 +231,31 @@ impl RouteSocket {
     }
 
     pub fn recv(&mut self) -> Result<Header, ReadError> {
-        let res = self
-            .kqueue
-            .kevent(&self.events, &mut self.event_buf, None)?;
+        loop {
+            let res = self
+                .kqueue
+                .kevent(&self.events, &mut self.event_buf, None)?;
 
-        match res {
-            1..=2 => {
-                let event = self.event_buf.first().expect("i hope we've populated this");
-                match event.ident() {
-                    KEVENT_TIMEOUT_ID => Err(ReadError::Timeout),
-                    id if id == self.raw_socket_fd => {
-                        let n = self.socket.read(&mut self.buf)?;
-                        log::trace!("read {n} bytes w kevent");
+            match res {
+                1..=2 => {
+                    let event = self.event_buf.first().expect("i hope we've populated this");
+                    match event.ident() {
+                        KEVENT_TIMEOUT_ID => return Err(ReadError::Timeout),
+                        id if id == self.raw_socket_fd => {
+                            let n = self.socket.read(&mut self.buf)?;
+                            log::trace!("read {n} bytes w kevent");
 
-                        let res = Header::from_raw(&self.buf[..n])?;
-                        Ok(res.unwrap())
+                            match Header::from_raw(&self.buf[..n])? {
+                                Some(res) => return Ok(res),
+                                None => continue,
+                            };
+                        }
+                        n => panic!("unknown event from kevent {n}"),
                     }
-                    n => panic!("unknown event from kevent {n}"),
                 }
-            }
-            n @ 3.. => panic!("somehow we got more elements from kevent than we put in? {n}"),
-            n @ ..=0 => panic!("we got {n} elements from kevent?"),
+                n @ 3.. => panic!("somehow we got more elements from kevent than we put in? {n}"),
+                n @ ..=0 => panic!("we got {n} elements from kevent?"),
+            };
         }
     }
     pub fn request_default_ipv4(&mut self) -> io::Result<()> {
