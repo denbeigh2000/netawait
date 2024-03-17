@@ -636,7 +636,9 @@ impl AddressSet {
                     SocketAddr::V6(a) => (IpAddr::V6(*a.ip()), len),
                 },
                 Err(e) => {
-                    log::warn!("fallback case");
+                    // Don't want to actually have this here, it gets shown by
+                    // default.
+                    // log::warn!("fallback case");
                     // NOTE: Sometimes, a netmask is not given to us as a
                     // sockaddr, but rather just as a raw IP. For some reason,
                     // nobody in the past 10 years except for this guy seems
@@ -645,7 +647,6 @@ impl AddressSet {
                     // Have not yet run into this, though:
                     // https://github.com/FRRouting/frr/blob/5c30b2e21205ecc60615b633dbc4714bae70a676/zebra/kernel_socket.c#L250-L253
                     let sample = info.destination.as_ref().or(info.gateway.as_ref());
-                    log::warn!("sample: {sample:?}");
                     match sample {
                         Some(SockAddr::V4(_)) => {
                             const N: usize = 4; // 4 bytes in ipv4

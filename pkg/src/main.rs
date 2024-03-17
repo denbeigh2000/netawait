@@ -8,6 +8,7 @@ use libroute::header::Header;
 use libroute::link::MessageType as LinkMessageType;
 use libroute::route::MessageType as RouteMessageType;
 use libroute::socket::{get_ifindex, ReadError, RouteSocket};
+use simple_logger::SimpleLogger;
 
 use crate::flags::WaitConditionFlag;
 
@@ -61,10 +62,22 @@ fn to_ifspec(if_name: &str) -> InterfaceSpec {
     }
 }
 
-fn real_main() -> Result<(), ReadError> {
-    env_logger::init();
+#[derive(thiserror::Error, Debug)]
+enum MainError {
+    #[error("error checking network state: {0}")]
+    Read(#[from] ReadError),
 
+    #[error("error setting logger: {0}")]
+    LogInit(#[from] log::SetLoggerError),
+}
+
+fn real_main() -> Result<(), MainError> {
     let args = Args::parse();
+    SimpleLogger::new()
+        .with_colors(true)
+        .with_level(args.log_level)
+        .init()?;
+
     // NOTE: This should be kept as early as humanly possible so that we can
     // catch up on any events we missed (e.g., new interfaces, etc). Otherwise
     // we could miss an interface/route created between the time we queried
@@ -255,15 +268,19 @@ fn is_given_interface_running(h: &Header, condition: &InterfaceCondition, index:
 fn main() {
     let code = match real_main() {
         Ok(_) => 0,
-        Err(ReadError::IO(e)) => {
+        Err(MainError::LogInit(e)) => {
+            log::error!("log initialisation error: {e}");
+            1
+        }
+        Err(MainError::Read(ReadError::IO(e))) => {
             log::error!("error: {e}");
             1
         }
-        Err(ReadError::Timeout) => {
+        Err(MainError::Read(ReadError::Timeout)) => {
             log::error!("timeout");
             2
         }
-        Err(ReadError::ParsingAddress(e)) => {
+        Err(MainError::Read(ReadError::ParsingAddress(e))) => {
             log::error!("error parsing address: {e}");
             3
         }

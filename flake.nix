@@ -31,7 +31,7 @@
 
         buildPackages = {
           common = {
-            inherit (pkgs.rust-bin.stable.latest) default rust-analyzer-preview;
+            inherit (pkgs.rust-bin.stable.latest) minimal rust-src rust-analysis rust-analyzer-preview;
             inherit (pkgs.rust-bin.nightly.latest) rustfmt-preview;
           };
           darwin = {

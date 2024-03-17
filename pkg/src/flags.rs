@@ -19,12 +19,22 @@ pub struct Args {
     /// - A specific interface receives a non-link-local address (if-gets-address=<eth0>)
     /// - A specific interface receives a non-local route (if-gets-route=<eth0>)
 
-    #[arg(short, long, default_value = "default-route", verbatim_doc_comment)]
+    #[arg(
+        short,
+        long,
+        default_value = "default-route",
+        env = "NETAWAIT_WAIT_CONDITION",
+        verbatim_doc_comment
+    )]
     pub wait_condition: WaitConditionFlag,
 
     /// If specified, will only wait this long for our condition to be met.
-    #[arg(short, long)]
+    #[arg(short, long, env = "NETAWAIT_TIMEOUT")]
     pub timeout: Option<i32>,
+
+    /// Log level to display output at
+    #[arg(short, long, env = "NETAWAIT_LOG_LEVEL", default_value = "warn")]
+    pub log_level: log::LevelFilter,
 }
 
 #[derive(Clone)]
