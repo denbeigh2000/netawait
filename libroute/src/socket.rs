@@ -1,12 +1,11 @@
 use crate::addresses::AddressParseError;
 use crate::header::Header;
 use nix::libc::uintptr_t;
-use nix::sys::event::{EventFilter, EventFlag, FilterFlag, KEvent, Kqueue};
-use route_sys::{
-    in_addr, route_request, rt_metrics, rt_msghdr, sockaddr_dl, sockaddr_in, AF_INET, RTA_DST,
-    RTA_IFA, RTA_IFP, RTA_NETMASK, RTF_GATEWAY, RTF_HOST, RTF_IFSCOPE, RTF_UP, RTM_GET,
-    RTM_VERSION, RTV_HOPCOUNT,
+use nix::libc::{
+    in_addr, rt_metrics, rt_msghdr, sockaddr_dl, sockaddr_in, AF_INET, RTA_DST, RTA_IFA, RTA_IFP,
+    RTA_NETMASK, RTF_GATEWAY, RTF_HOST, RTF_IFSCOPE, RTF_UP, RTM_GET, RTM_VERSION, RTV_HOPCOUNT,
 };
+use nix::sys::event::{EventFilter, EventFlag, FilterFlag, KEvent, Kqueue};
 
 use nix::net::if_::if_nametoindex;
 use nix::sys::socket::{self as nix_socket, AddressFamily, SockFlag, SockType};
@@ -22,6 +21,15 @@ const ADDR_LEN: usize = size_of::<sockaddr_dl>();
 const HDR_LEN: usize = size_of::<rt_msghdr>();
 const INT_REQ_SIZE: usize = ADDR_LEN + HDR_LEN;
 
+#[allow(non_camel_case_types)]
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+struct route_request {
+    pub rtm: rt_msghdr,
+    pub dst: sockaddr_in,
+    pub mask: sockaddr_in,
+}
+
 fn interface_info_req(if_idx: u16, seq: i32) -> [u8; INT_REQ_SIZE] {
     let hdr = rt_msghdr {
         rtm_msglen: INT_REQ_SIZE as u16,
@@ -30,8 +38,8 @@ fn interface_info_req(if_idx: u16, seq: i32) -> [u8; INT_REQ_SIZE] {
         rtm_index: if_idx,
         // Required to scope the request down to just the index specifiecd
         // in rtm_index
-        rtm_flags: (RTF_IFSCOPE | RTF_HOST) as i32,
-        rtm_addrs: (RTA_DST | RTA_IFP | RTA_IFA) as i32,
+        rtm_flags: RTF_IFSCOPE | RTF_HOST,
+        rtm_addrs: RTA_DST | RTA_IFP | RTA_IFA,
         rtm_pid: 0,
         rtm_seq: seq,
         rtm_errno: 0,
@@ -89,13 +97,13 @@ fn default_ipv4_request(seq: i32) -> route_request {
             rtm_version: RTM_VERSION as u8,
             rtm_type: RTM_GET as u8,
             rtm_index: 0,
-            rtm_flags: (RTF_UP as i32) | (RTF_GATEWAY as i32),
-            rtm_addrs: (RTA_DST as i32) | (RTA_NETMASK as i32),
+            rtm_flags: RTF_UP | RTF_GATEWAY,
+            rtm_addrs: RTA_DST | RTA_NETMASK,
             rtm_pid: 0,
             rtm_seq: seq,
             rtm_errno: 0,
             rtm_use: 0,
-            rtm_inits: RTV_HOPCOUNT,
+            rtm_inits: RTV_HOPCOUNT as u32,
             rtm_rmx: rt_metrics {
                 rmx_expire: 0,
                 rmx_locks: 0,

@@ -1,11 +1,11 @@
-use route_sys::{
-    if_indextoname, rt_msghdr, IFNAMSIZ, RTM_ADD, RTM_CHANGE, RTM_DELADDR, RTM_DELETE, RTM_GET,
-    RTM_GET2, RTM_IFINFO, RTM_IFINFO2, RTM_NEWADDR,
-};
-
 use crate::addresses::{AddressInfo, AddressParseError, AddressSet};
 use crate::link::LinkInfo;
 use crate::route::RouteInfo;
+
+use nix::libc::{
+    if_indextoname, rt_msghdr, IFNAMSIZ, RTM_ADD, RTM_CHANGE, RTM_DELADDR, RTM_DELETE, RTM_GET,
+    RTM_GET2, RTM_IFINFO, RTM_IFINFO2, RTM_NEWADDR, RTM_OLDADD, RTM_OLDDEL,
+};
 
 #[derive(Debug)]
 pub enum Header {
@@ -15,7 +15,7 @@ pub enum Header {
 }
 
 impl Header {
-    pub fn index(&self) -> u32 {
+    pub fn index(&self) -> u16 {
         match self {
             Self::Route(r) => r.index,
             Self::Link(l) => l.index,
@@ -56,10 +56,10 @@ impl Header {
 
         let seq = hdr.rtm_seq;
         let pid = hdr.rtm_pid;
-        let hdr_type = hdr.rtm_type;
+        let hdr_type = hdr.rtm_type as i32;
         log::trace!("type: {hdr_type}, seq: {seq}, pid: {pid}");
-        match hdr_type as u32 {
-            RTM_ADD | RTM_DELETE | RTM_CHANGE | RTM_GET | RTM_GET2 => {
+        match hdr_type {
+            RTM_ADD | RTM_DELETE | RTM_CHANGE | RTM_GET | RTM_GET2 | RTM_OLDADD | RTM_OLDDEL => {
                 log::trace!("parsing route (type {})", hdr.rtm_type);
                 RouteInfo::from_raw(data).map(|opt| opt.map(Self::Route))
             }
@@ -80,7 +80,7 @@ impl Header {
 }
 
 pub fn interface_index_to_name(idx: u32) -> Option<String> {
-    let mut ifname = [0u8; IFNAMSIZ as usize]; // IFNAMSIZ is the length for an interface name
+    let mut ifname = [0u8; IFNAMSIZ]; // IFNAMSIZ is the length for an interface name
 
     // I don't understand why the `nix` crate has `if_nametoindex`
     // but not if_indextoname

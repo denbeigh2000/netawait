@@ -1,8 +1,8 @@
-use route_sys::{
+use crate::addresses::{AddressFlags, AddressParseError, AddressSet};
+
+use nix::libc::{
     rt_metrics, rt_msghdr, RTF_GATEWAY, RTF_UP, RTM_ADD, RTM_CHANGE, RTM_DELETE, RTM_GET, RTM_GET2,
 };
-
-use crate::addresses::{AddressFlags, AddressParseError, AddressSet};
 
 #[derive(Clone, Debug)]
 /// Type of message from kernel
@@ -39,7 +39,7 @@ impl MessageType {
 #[derive(Debug)]
 pub struct RouteInfo {
     pub operation: MessageType,
-    pub index: u32,
+    pub index: u16,
     pub flags: RoutingFlags, // parsed from rt_flags in rt_msghdr
     pub metrics: RouteMetrics,
 
@@ -74,7 +74,7 @@ impl RouteInfo {
         let hdr = unsafe { *hdr_ptr };
 
         // Validate the message type
-        let op = match (hdr).rtm_type as u32 {
+        let op = match (hdr).rtm_type as i32 {
             RTM_ADD => MessageType::Add,
             RTM_DELETE => MessageType::Delete,
             RTM_GET => MessageType::Get,
@@ -85,7 +85,7 @@ impl RouteInfo {
         };
 
         // Start of parsing sockaddr structures
-        let addr_flags = AddressFlags::new(hdr.rtm_addrs as u32);
+        let addr_flags = AddressFlags::new(hdr.rtm_addrs);
         log::trace!("op: {op:?}, addr_flags: {}", addr_flags);
         let addrs_data = &data[std::mem::size_of::<rt_msghdr>()..];
         log::trace!("sizeof: {:?}", std::mem::size_of::<rt_msghdr>());
@@ -93,7 +93,7 @@ impl RouteInfo {
 
         // Initialize variable to store route data
         Ok(Some(Self {
-            index: hdr.rtm_index as u32,
+            index: hdr.rtm_index,
             operation: op,
             flags: RoutingFlags::from_raw(hdr.rtm_flags),
             metrics: RouteMetrics::from_raw(&hdr.rtm_rmx),
@@ -118,11 +118,11 @@ impl RoutingFlags {
 
     // TODO: We may want to support more here?
     pub fn is_up(&self) -> bool {
-        self.0 & (RTF_UP as i32) != 0
+        self.0 & (RTF_UP) != 0
     }
 
     pub fn has_gateway(&self) -> bool {
-        self.0 & (RTF_GATEWAY as i32) != 0
+        self.0 & (RTF_GATEWAY) != 0
     }
 }
 

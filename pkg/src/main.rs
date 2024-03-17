@@ -204,7 +204,7 @@ fn index_for_name(h: &Header, if_name: &str) -> Option<u16> {
 
 fn is_given_interface_running(h: &Header, condition: &InterfaceCondition, index: &u16) -> bool {
     let idx = h.index();
-    if *index != idx as u16 {
+    if *index != idx {
         log::trace!("wrong index {index}");
         return false;
     }

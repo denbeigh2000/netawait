@@ -1,10 +1,10 @@
-use route_sys::{
+use crate::addresses::{AddressFlags, AddressParseError, AddressSet};
+
+use nix::libc::{
     if_msghdr, IFF_ALLMULTI, IFF_BROADCAST, IFF_DEBUG, IFF_LOOPBACK, IFF_NOARP, IFF_NOTRAILERS,
     IFF_OACTIVE, IFF_POINTOPOINT, IFF_PROMISC, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, RTM_DELADDR,
     RTM_DELMADDR, RTM_IFINFO, RTM_IFINFO2, RTM_NEWADDR, RTM_NEWMADDR, RTM_NEWMADDR2,
 };
-
-use crate::addresses::{AddressFlags, AddressParseError, AddressSet};
 
 #[derive(Debug)]
 pub enum MessageType {
@@ -18,7 +18,7 @@ pub enum MessageType {
 }
 
 impl MessageType {
-    pub fn from_raw(value: u32) -> Option<Self> {
+    pub fn from_raw(value: i32) -> Option<Self> {
         match value {
             RTM_IFINFO => Some(MessageType::Info),
             RTM_NEWADDR => Some(MessageType::NewAddr),
@@ -35,7 +35,7 @@ impl MessageType {
 #[derive(Debug)]
 pub struct LinkInfo {
     pub operation: MessageType,
-    pub index: u32,
+    pub index: u16,
     pub flags: LinkFlags,
     pub addrs: AddressSet,
 }
@@ -50,13 +50,13 @@ impl LinkInfo {
         assert!(struct_size <= data_len);
 
         // The source code says to see rtm_attrs for these, so..
-        let addr_flags = AddressFlags::new(hdr.ifm_addrs as u32);
+        let addr_flags = AddressFlags::new(hdr.ifm_addrs);
         let addrs_data = &data[struct_size..];
 
         Ok(Some(Self {
             operation: MessageType::from_raw(hdr.ifm_type.into()).unwrap(),
-            index: hdr.ifm_index as u32,
-            flags: LinkFlags::new(hdr.ifm_flags as u32),
+            index: hdr.ifm_index,
+            flags: LinkFlags::new(hdr.ifm_flags),
             addrs: AddressSet::from_raw(addrs_data, &addr_flags)?,
         }))
     }
@@ -104,10 +104,10 @@ impl LinkInfo {
 }
 
 #[derive(Debug)]
-pub struct LinkFlags(u32);
+pub struct LinkFlags(i32);
 
 impl LinkFlags {
-    pub fn new(flags: u32) -> Self {
+    pub fn new(flags: i32) -> Self {
         Self(flags)
     }
 

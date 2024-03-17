@@ -1,4 +1,4 @@
-use route_sys::{
+use nix::libc::{
     ifa_msghdr, sockaddr, sockaddr_dl, sockaddr_in, sockaddr_in6, AF_INET, AF_INET6, AF_LINK,
     RTA_AUTHOR, RTA_BRD, RTA_DST, RTA_GATEWAY, RTA_GENMASK, RTA_IFA, RTA_IFP, RTA_NETMASK,
     RTF_BLACKHOLE, RTF_BROADCAST, RTF_CLONING, RTF_CONDEMNED, RTF_DEAD, RTF_DELCLONE, RTF_DONE,
@@ -11,10 +11,10 @@ use route_sys::{
 use std::mem;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
-pub struct AddressFlags(u32);
+pub struct AddressFlags(i32);
 
 impl AddressFlags {
-    pub fn new(flags: u32) -> Self {
+    pub fn new(flags: i32) -> Self {
         Self(flags)
     }
 
@@ -96,7 +96,7 @@ impl SockAddr {
         // struct as passed from the kernel. this should probably be removed from
         // the rest of the common parsing logic.
         let sockaddr_ptr: *const sockaddr = data.as_ptr() as *const _;
-        let family = unsafe { (*sockaddr_ptr).sa_family as u32 };
+        let family = unsafe { (*sockaddr_ptr).sa_family as i32 };
         // NOTE: we have to get this here, because otherwise we can't skip over
         // unsupported chunks when parsing
         let len = unsafe { (*sockaddr_ptr).sa_len as usize };
@@ -137,7 +137,7 @@ pub fn parse_link(data: &[u8]) -> Result<(DataLinkAddr, usize), AddressParseErro
     // struct as passed from the kernel. this should probably be removed from
     // the rest of the common parsing logic.
     let sockaddr_dl_ptr: *const sockaddr_dl = data.as_ptr() as *const _;
-    let family = unsafe { (*sockaddr_dl_ptr).sdl_family as u32 };
+    let family = unsafe { (*sockaddr_dl_ptr).sdl_family as i32 };
     assert!(family == AF_LINK, "sdl_family must be AF_LINK");
     // NOTE: we have to get this here, because otherwise we can't skip over
     // unsupported chunks when parsing
@@ -156,7 +156,7 @@ pub fn parse_ip(data: &[u8]) -> Result<(SocketAddr, usize), AddressParseError> {
     // struct as passed from the kernel. this should probably be removed from
     // the rest of the common parsing logic.
     let sockaddr_in_ptr: *const sockaddr_in = data.as_ptr() as *const _;
-    let family = unsafe { (*sockaddr_in_ptr).sin_family as u32 };
+    let family = unsafe { (*sockaddr_in_ptr).sin_family as i32 };
     // NOTE: we have to get this here, because otherwise we can't skip over
     // unsupported chunks when parsing
     let len = unsafe { (*sockaddr_in_ptr).sin_len as usize };
@@ -207,7 +207,7 @@ impl DataLinkAddr {
     pub unsafe fn from_raw(ptr: *const sockaddr_dl) -> Self {
         let addr = *ptr;
 
-        assert!(addr.sdl_family as u32 == AF_LINK);
+        assert!(addr.sdl_family as i32 == AF_LINK);
 
         let index = addr.sdl_index;
         // NOTE: convert our [i8; 12] to a [u8; 12]. This is raw data that is
@@ -246,8 +246,8 @@ trait NetStruct<P>
 where
     Self: Sized,
 {
-    const EXPECTED_FAMILY: u32;
-    fn family(ptr: *const P) -> u32;
+    const EXPECTED_FAMILY: i32;
+    fn family(ptr: *const P) -> i32;
     fn len(ptr: *const P) -> usize;
 
     fn from_raw(ptr: *const P) -> Result<Self, AddressParseError>;
@@ -275,9 +275,9 @@ where
 }
 
 impl NetStruct<sockaddr_dl> for DataLinkAddr {
-    const EXPECTED_FAMILY: u32 = AF_LINK;
+    const EXPECTED_FAMILY: i32 = AF_LINK;
 
-    fn family(ptr: *const sockaddr_dl) -> u32 {
+    fn family(ptr: *const sockaddr_dl) -> i32 {
         unsafe { (*ptr).sdl_family }.into()
     }
 
@@ -291,10 +291,10 @@ impl NetStruct<sockaddr_dl> for DataLinkAddr {
 }
 
 impl NetStruct<sockaddr_in> for SocketAddrV4 {
-    const EXPECTED_FAMILY: u32 = AF_INET;
+    const EXPECTED_FAMILY: i32 = AF_INET;
 
-    fn family(ptr: *const sockaddr_in) -> u32 {
-        unsafe { (*ptr).sin_family as u32 }
+    fn family(ptr: *const sockaddr_in) -> i32 {
+        unsafe { (*ptr).sin_family as i32 }
     }
 
     fn len(ptr: *const sockaddr_in) -> usize {
@@ -314,10 +314,10 @@ impl NetStruct<sockaddr_in> for SocketAddrV4 {
 }
 
 impl NetStruct<sockaddr_in6> for SocketAddrV6 {
-    const EXPECTED_FAMILY: u32 = AF_INET6;
+    const EXPECTED_FAMILY: i32 = AF_INET6;
 
-    fn family(ptr: *const sockaddr_in6) -> u32 {
-        unsafe { (*ptr).sin6_family as u32 }
+    fn family(ptr: *const sockaddr_in6) -> i32 {
+        unsafe { (*ptr).sin6_family as i32 }
     }
 
     fn len(ptr: *const sockaddr_in6) -> usize {
@@ -327,7 +327,7 @@ impl NetStruct<sockaddr_in6> for SocketAddrV6 {
     fn from_raw(ptr: *const sockaddr_in6) -> Result<Self, AddressParseError> {
         let raw_addr = unsafe { *ptr };
         let port = u16::from_be((raw_addr).sin6_port);
-        // SAFETY: This is a union of: [u8; 16], [u16; 8], [u32; 4]
+        // SAFETY: This is a union of: [u8; 16], [u16; 8], [i32; 4]
         // which are all different ways to represent the same data
         // (a 128-bit IP address). In this case, we just take the
         // underlying data and cast it as a [u8; 16]
@@ -349,7 +349,7 @@ pub enum AddressParseError {
     #[error("data given is larger than slice given")]
     PartialData,
     #[error("wrong family (expected {0}, got {1})")]
-    WrongFamily(u32, u32),
+    WrongFamily(i32, i32),
     #[error("can't have netmask without a known protocol")]
     NetmaskWithoutKnownProto,
 }
@@ -377,10 +377,10 @@ pub enum AddressOperation {
 }
 
 #[derive(Debug)]
-pub struct AddressInfoFlags(u32);
+pub struct AddressInfoFlags(i32);
 
 impl AddressInfoFlags {
-    pub fn new(val: u32) -> Self {
+    pub fn new(val: i32) -> Self {
         Self(val)
     }
 
@@ -518,7 +518,7 @@ pub struct AddressSet {
 #[derive(Debug)]
 pub struct AddressInfo {
     pub operation: AddressOperation,
-    pub index: u32,
+    pub index: u16,
     pub metric: i32,
     pub flags: AddressInfoFlags,
     pub addrs: AddressSet,
@@ -754,16 +754,16 @@ impl AddressInfo {
         let hdr_ptr: *const ifa_msghdr = data.as_ptr() as *const _;
         let hdr = unsafe { *hdr_ptr };
 
-        let flags = AddressInfoFlags::new(hdr.ifam_flags as u32);
+        let flags = AddressInfoFlags::new(hdr.ifam_flags);
 
-        let op = match (hdr).ifam_type as u32 {
+        let op = match (hdr).ifam_type as i32 {
             RTM_NEWADDR => AddressOperation::Add,
             RTM_DELADDR => AddressOperation::Delete,
             _ => return Ok(None),
         };
 
         // Start of parsing sockaddr structures
-        let addr_flags = AddressFlags::new(hdr.ifam_addrs as u32);
+        let addr_flags = AddressFlags::new(hdr.ifam_addrs);
         log::trace!("op: {op:?}, addr_flags: {}", addr_flags);
         let n = std::mem::size_of::<ifa_msghdr>();
         log::trace!("ifa_msghdr size: {n}");
@@ -775,7 +775,7 @@ impl AddressInfo {
 
         // Initialize variable to store route data
         Ok(Some(Self {
-            index: hdr.ifam_index as u32,
+            index: hdr.ifam_index,
             operation: op,
             flags,
             metric: hdr.ifam_metric,
