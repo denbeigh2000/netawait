@@ -14,6 +14,7 @@ lazy_static! {
 #[derive(Parser)]
 pub struct Args {
     /// If specified, waits for this interface to be up AND assigned a route OR address.
+    /// e.g., -w if-gets-address=eth0; -w if-gets-route=eth0
     #[arg(short, long)]
     pub wait_condition: WaitConditionFlag,
 
