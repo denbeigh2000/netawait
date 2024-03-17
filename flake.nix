@@ -4,20 +4,19 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    naersk = {
+      url = "github:nix-community/naersk";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay, naersk }:
     let
-      systems = [
-        "x86_64-linux"
-        "x86_64-darwin"
-        "aarch64-linux"
-        "aarch64-darwin"
-      ];
+      systems = [ "x86_64-darwin" "aarch64-darwin" ];
     in
     { } // flake-utils.lib.eachSystem systems (system:
       let
@@ -45,6 +44,15 @@
           (optionalAttrs hostPlatform.isDarwin buildPackages.darwin)
         ;
 
+        naersk' = pkgs.callPackage naersk {
+          rustc = pkgs.rust-bin.stable.latest.default;
+          cargo = pkgs.rust-bin.stable.latest.default;
+        };
+        binary = naersk'.buildPackage {
+          pname = "netawait";
+          src = ./.;
+        };
+
       in
       {
         devShells = {
@@ -60,9 +68,11 @@
               export CLANG_PATH="${pkgs.clang}/bin/clang"
             '';
           };
-
         };
 
+        packages = {
+          default = binary;
+          netawait = binary;
+        };
       });
-
 }
