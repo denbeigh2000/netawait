@@ -11,14 +11,18 @@ lazy_static! {
     ];
 }
 
+/// Waits for a network condition to be met.
 #[derive(Parser)]
 pub struct Args {
-    /// If specified, waits for this interface to be up AND assigned a route OR address.
-    /// e.g., -w if-gets-address=eth0; -w if-gets-route=eth0
-    #[arg(short, long)]
+    /// Specifes the exit condition:
+    /// - A global default route is available (default-route)
+    /// - A specific interface receives a non-link-local address (if-gets-address=<eth0>)
+    /// - A specific interface receives a non-local route (if-gets-route=<eth0>)
+
+    #[arg(short, long, default_value = "default-route", verbatim_doc_comment)]
     pub wait_condition: WaitConditionFlag,
 
-    /// If specified, will only wait this long for our condition to be met
+    /// If specified, will only wait this long for our condition to be met.
     #[arg(short, long)]
     pub timeout: Option<i32>,
 }
@@ -28,6 +32,12 @@ pub enum WaitConditionFlag {
     DefaultRouteExists,
     InterfaceHasAddress(String),
     InterfaceHasRoute(String),
+}
+
+impl Default for WaitConditionFlag {
+    fn default() -> Self {
+        Self::DefaultRouteExists
+    }
 }
 
 impl FromStr for WaitConditionFlag {
