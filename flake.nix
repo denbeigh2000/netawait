@@ -58,7 +58,7 @@
         devShells = {
           default = mkShell {
             packages = attrValues packages;
-            nativeBuildInputs = [ pkgs.libclang.lib pkgs.stdenv pkgs.libclang ];
+            nativeBuildInputs = [ pkgs.libclang.lib pkgs.stdenv pkgs.libclang pkgs.git pkgs.gh ];
             shellHook = ''
               # clang-sys needs to be able to find libclang during building
               export LIBCLANG_PATH="${pkgs.libclang.lib}/lib"
